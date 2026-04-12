@@ -27,6 +27,12 @@ pub fn chunk_file(file_path: String, chunk_size: usize) -> Result<Vec<Vec<u8>>, 
 
 /// Reassemble chunks into a file
 pub fn reassemble_file(chunks: Vec<Vec<u8>>, output_path: String) -> Result<(), String> {
+    // Path traversal protection: prevent use of ".." in paths
+    let path = Path::new(&output_path);
+    if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err("Path traversal attempt detected".to_string());
+    }
+
     let mut file = File::create(&output_path)
         .map_err(|e| format!("Failed to create file: {}", e))?;
 
@@ -89,12 +95,12 @@ mod tests {
     #[test]
     fn test_chunk_file() {
         // Create a temporary test file
-        let test_path = "/tmp/test_chunk.bin";
-        let mut file = File::create(test_path).expect("Failed to create test file");
+        let test_path = std::env::temp_dir().join("test_chunk.bin");
+        let mut file = File::create(&test_path).expect("Failed to create test file");
         file.write_all(&vec![0u8; 2048])
             .expect("Failed to write test data");
 
-        let chunks = chunk_file(test_path.to_string(), 512).expect("Chunking failed");
+        let chunks = chunk_file(test_path.to_str().unwrap().to_string(), 512).expect("Chunking failed");
         assert_eq!(chunks.len(), 4); // 2048 / 512 = 4 chunks
 
         std::fs::remove_file(test_path).ok();
@@ -102,12 +108,12 @@ mod tests {
 
     #[test]
     fn test_get_file_size() {
-        let test_path = "/tmp/test_size.bin";
-        let mut file = File::create(test_path).expect("Failed to create test file");
+        let test_path = std::env::temp_dir().join("test_size.bin");
+        let mut file = File::create(&test_path).expect("Failed to create test file");
         file.write_all(&vec![0u8; 1024])
             .expect("Failed to write test data");
 
-        let size = get_file_size(test_path.to_string()).expect("Failed to get size");
+        let size = get_file_size(test_path.to_str().unwrap().to_string()).expect("Failed to get size");
         assert_eq!(size, 1024);
 
         std::fs::remove_file(test_path).ok();

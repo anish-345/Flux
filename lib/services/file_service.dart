@@ -196,6 +196,10 @@ class FileService extends BaseService {
 
   /// Get file name from path
   String getFileName(String filePath) {
+    // Handle both Unix and Windows path separators
+    if (filePath.contains('\\')) {
+      return filePath.split('\\').last;
+    }
     return filePath.split('/').last;
   }
 
