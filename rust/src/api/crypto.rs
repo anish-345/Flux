@@ -78,9 +78,25 @@ pub fn hash_sha256(data: Vec<u8>) -> Vec<u8> {
 
 /// Calculate SHA-256 hash of a file
 pub fn hash_file(path: String) -> Result<Vec<u8>, String> {
-    let data = std::fs::read(&path)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
-    Ok(hash_sha256(data))
+    use std::fs::File;
+    use std::io::{BufReader, Read};
+
+    let file = File::open(&path).map_err(|e| format!("Failed to open file: {}", e))?;
+    let mut reader = BufReader::with_capacity(1024 * 1024, file); // 1MB buffer
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+
+    loop {
+        let n = reader
+            .read(&mut buffer)
+            .map_err(|e| format!("Failed to read file: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+
+    Ok(hasher.finalize().to_vec())
 }
 
 /// Verify file integrity by comparing hashes

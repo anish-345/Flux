@@ -7,7 +7,10 @@ edition = "2021"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
+aes-gcm = "0.10.3"
 flutter_rust_bridge = "=2.11.1"
+hex = "0.4.3"
+rand = "0.8.5"
 sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 
