@@ -64,14 +64,15 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           // Welcome section
           Container(
-            padding: const EdgeInsets.all(20),
+            padding: const EdgeInsets.all(24),
             decoration: BoxDecoration(
               gradient: LinearGradient(
                 colors: [AppTheme.primaryColor, AppTheme.secondaryColor],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [AppTheme.shadowLg],
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -229,13 +230,15 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Container(
         decoration: BoxDecoration(
           color: AppTheme.surfaceColor,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(16),
           border: Border.all(color: AppTheme.borderColor),
-          boxShadow: [AppTheme.shadowSm],
+          boxShadow: [AppTheme.shadowMd],
         ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
             Icon(icon, size: 40, color: AppTheme.primaryColor),
             const SizedBox(height: 12),
             Text(
@@ -256,7 +259,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -264,12 +268,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildConnectionStatusCard(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: AppTheme.surfaceColor,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: AppTheme.borderColor),
-        boxShadow: [AppTheme.shadowSm],
+        boxShadow: [AppTheme.shadowMd],
       ),
       child: Column(
         children: [
