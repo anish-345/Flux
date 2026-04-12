@@ -218,7 +218,8 @@ mod tests {
     #[test]
     fn test_file_operations() {
         let engine = TransferEngine::new();
-        let test_file = "/tmp/test_transfer.txt";
+        let test_path = std::env::temp_dir().join("test_transfer.txt");
+        let test_file = test_path.to_str().unwrap();
         let test_data = b"Hello, Rust Transfer Engine!";
 
         // Write file
