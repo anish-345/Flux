@@ -245,14 +245,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       await ref
           .read(settingsProvider.notifier)
           .updateDeviceName(_deviceNameController.text);
-      if (mounted) {
+      if (mounted && context.mounted) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('Device name updated')));
       }
     } catch (e) {
       AppLogger.error('Failed to update device name', e);
-      if (mounted) {
+      if (mounted && context.mounted) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('Failed to update: $e')));
@@ -276,7 +276,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           FilledButton(
             onPressed: () async {
               await ref.read(settingsProvider.notifier).resetToDefaults();
-              if (mounted) {
+              if (mounted && context.mounted) {
                 Navigator.pop(context);
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('Settings reset to defaults')),

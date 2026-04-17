@@ -1,9 +1,10 @@
+import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flux/models/device.dart';
 import 'package:flux/services/bluetooth_service.dart';
 import 'package:flux/utils/logger.dart';
 
-/// Provider for managing discovered and connected devices
+/// Provider for managing discovered and connected devices with backpressure
 final deviceProvider = StateNotifierProvider<DeviceNotifier, List<Device>>((
   ref,
 ) {
@@ -32,9 +33,80 @@ final trustedDevicesProvider = Provider<List<Device>>((ref) {
   return devices.where((device) => device.isTrusted).toList();
 });
 
+/// Stream transformer for throttling device discovery events
+StreamTransformer<List<Device>, List<Device>> _throttleDevices() {
+  DateTime? lastEmit;
+  List<Device> bufferedDevices = [];
+
+  return StreamTransformer<List<Device>, List<Device>>.fromHandlers(
+    handleData: (devices, sink) {
+      final now = DateTime.now();
+
+      // Buffer devices if we're throttling
+      if (lastEmit != null &&
+          now.difference(lastEmit!) < const Duration(milliseconds: 300)) {
+        bufferedDevices.addAll(devices);
+        return;
+      }
+
+      // Emit current batch
+      final allDevices = [...bufferedDevices, ...devices];
+      if (allDevices.isNotEmpty) {
+        sink.add(allDevices);
+        bufferedDevices.clear();
+        lastEmit = now;
+      }
+    },
+    handleDone: (sink) {
+      // Emit any remaining buffered devices
+      if (bufferedDevices.isNotEmpty) {
+        sink.add(bufferedDevices);
+      }
+      sink.close();
+    },
+  );
+}
+
+/// Stream transformer for batching device updates
+StreamTransformer<List<Device>, List<Device>> _batchDevices() {
+  Timer? batchTimer;
+  List<Device> batchBuffer = [];
+  final StreamController<List<Device>> controller =
+      StreamController<List<Device>>();
+
+  void emitBatch() {
+    if (batchBuffer.isNotEmpty) {
+      controller.add([...batchBuffer]);
+      batchBuffer.clear();
+    }
+  }
+
+  return StreamTransformer<List<Device>, List<Device>>.fromHandlers(
+    handleData: (devices, sink) {
+      batchBuffer.addAll(devices);
+
+      // Cancel existing timer
+      batchTimer?.cancel();
+
+      // Set new timer to emit batch
+      batchTimer = Timer(const Duration(milliseconds: 500), () {
+        emitBatch();
+      });
+    },
+    handleDone: (sink) {
+      batchTimer?.cancel();
+      emitBatch();
+      controller.close();
+    },
+  );
+}
+
 class DeviceNotifier extends StateNotifier<List<Device>> {
   late BluetoothService _bluetoothService;
   final Map<String, Device> _deviceCache = {};
+  StreamSubscription? _discoverySubscription;
+  StreamSubscription? _connectionSubscription;
+  Timer? _throttleTimer;
 
   DeviceNotifier() : super([]) {
     _initialize();
@@ -45,22 +117,31 @@ class DeviceNotifier extends StateNotifier<List<Device>> {
       _bluetoothService = BluetoothService();
       await _bluetoothService.initialize();
       _setupListeners();
-      AppLogger.info('DeviceNotifier initialized');
+      AppLogger.info('DeviceNotifier initialized with backpressure handling');
     } catch (e) {
       AppLogger.error('Failed to initialize DeviceNotifier', e);
     }
   }
 
   void _setupListeners() {
-    // Listen for device discovery events
-    _bluetoothService.discoveredDevicesStream.listen((devices) {
-      _updateDeviceList(devices);
-    });
+    // Setup discovery listener with throttling and batching
+    _discoverySubscription = _bluetoothService.discoveredDevicesStream
+        .transform(_throttleDevices())
+        .transform(_batchDevices())
+        .listen(
+          (devices) => _updateDeviceList(devices),
+          onError: (error) {
+            AppLogger.error('Device discovery stream error', error);
+          },
+        );
 
-    // Listen for connection state changes
-    _bluetoothService.connectionStateStream.listen((event) {
-      _handleConnectionStateChange(event);
-    });
+    // Setup connection state listener
+    _connectionSubscription = _bluetoothService.connectionStateStream.listen(
+      (event) => _handleConnectionStateChange(event),
+      onError: (error) {
+        AppLogger.error('Connection state stream error', error);
+      },
+    );
   }
 
   void _updateDeviceList(List<Device> discoveredDevices) {
@@ -71,18 +152,21 @@ class DeviceNotifier extends StateNotifier<List<Device>> {
       updatedDevices.add(device);
     }
 
-    // Add new devices
+    // Add new devices with deduplication
     for (final newDevice in discoveredDevices) {
       final existingIndex = updatedDevices.indexWhere(
         (d) => d.id == newDevice.id,
       );
       if (existingIndex >= 0) {
+        // Update existing device
         updatedDevices[existingIndex] = newDevice;
       } else {
+        // Add new device
         updatedDevices.add(newDevice);
       }
     }
 
+    // Update state and cache
     state = updatedDevices;
     _deviceCache.clear();
     for (final device in updatedDevices) {
@@ -197,5 +281,13 @@ class DeviceNotifier extends StateNotifier<List<Device>> {
 
   int getTrustedDevicesCount() {
     return state.where((device) => device.isTrusted).length;
+  }
+
+  @override
+  void dispose() {
+    _discoverySubscription?.cancel();
+    _connectionSubscription?.cancel();
+    _throttleTimer?.cancel();
+    super.dispose();
   }
 }

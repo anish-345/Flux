@@ -1,7 +1,16 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
 import 'package:flux/models/connection_state.dart';
 import 'package:flux/services/connectivity_service.dart';
+import 'package:flux/services/bluetooth_service.dart';
 import 'package:flux/utils/logger.dart';
+
+/// Provider for monitoring Bluetooth adapter state
+final bluetoothAdapterStateProvider = StreamProvider<fbp.BluetoothAdapterState>(
+  (ref) {
+    return BluetoothService().adapterStateStream;
+  },
+);
 
 /// Provider for monitoring network and Bluetooth connectivity
 final connectionProvider =

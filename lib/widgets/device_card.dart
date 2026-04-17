@@ -7,6 +7,7 @@ class DeviceCard extends StatelessWidget {
   final VoidCallback onDisconnect;
   final VoidCallback onTrust;
   final VoidCallback onUntrust;
+  final VoidCallback? onSendFiles;
 
   const DeviceCard({
     super.key,
@@ -15,6 +16,7 @@ class DeviceCard extends StatelessWidget {
     required this.onDisconnect,
     required this.onTrust,
     required this.onUntrust,
+    this.onSendFiles,
   });
 
   @override
@@ -55,8 +57,8 @@ class DeviceCard extends StatelessWidget {
                   ),
                   decoration: BoxDecoration(
                     color: device.isConnected
-                        ? Colors.green.withOpacity(0.2)
-                        : Colors.grey.withOpacity(0.2),
+                        ? Colors.green.withValues(alpha: 0.2)
+                        : Colors.grey.withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
@@ -106,7 +108,7 @@ class DeviceCard extends StatelessWidget {
                     vertical: 6,
                   ),
                   decoration: BoxDecoration(
-                    color: Colors.blue.withOpacity(0.2),
+                    color: Colors.blue.withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Row(
@@ -127,27 +129,46 @@ class DeviceCard extends StatelessWidget {
               ),
 
             // Action Buttons
-            Row(
+            Column(
               children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: device.isConnected ? onDisconnect : onConnect,
-                    icon: Icon(
-                      device.isConnected ? Icons.link_off : Icons.link,
+                // Connect / Disconnect + Trust row
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: device.isConnected ? onDisconnect : onConnect,
+                        icon: Icon(
+                          device.isConnected ? Icons.link_off : Icons.link,
+                        ),
+                        label: Text(device.isConnected ? 'Disconnect' : 'Connect'),
+                      ),
                     ),
-                    label: Text(device.isConnected ? 'Disconnect' : 'Connect'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: device.isTrusted ? onUntrust : onTrust,
-                    icon: Icon(
-                      device.isTrusted ? Icons.verified_user : Icons.person_add,
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: device.isTrusted ? onUntrust : onTrust,
+                        icon: Icon(
+                          device.isTrusted
+                              ? Icons.verified_user
+                              : Icons.person_add,
+                        ),
+                        label: Text(device.isTrusted ? 'Untrust' : 'Trust'),
+                      ),
                     ),
-                    label: Text(device.isTrusted ? 'Untrust' : 'Trust'),
-                  ),
+                  ],
                 ),
+                // Send Files button — only when connected
+                if (device.isConnected && onSendFiles != null) ...[
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: onSendFiles,
+                      icon: const Icon(Icons.upload_rounded),
+                      label: const Text('Send Files'),
+                    ),
+                  ),
+                ],
               ],
             ),
           ],

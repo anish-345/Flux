@@ -125,7 +125,7 @@ class ErrorHandlingWidget extends ConsumerWidget {
 
     return Material(
       child: Container(
-        color: AppTheme.warningColor.withOpacity(0.9),
+        color: AppTheme.warningColor.withValues(alpha: 0.9),
         padding: const EdgeInsets.all(12),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -155,7 +155,7 @@ class ErrorHandlingWidget extends ConsumerWidget {
                     'Enable ${feature.name}',
                     style: const TextStyle(color: Colors.white, fontSize: 12),
                   ),
-                  backgroundColor: Colors.white.withOpacity(0.2),
+                  backgroundColor: Colors.white.withValues(alpha: 0.2),
                   onDeleted: () {
                     _enableFeature(ref, feature);
                   },
@@ -289,7 +289,7 @@ class FeatureEnablementDialog extends ConsumerWidget {
               ],
             ),
           );
-        }).toList(),
+        }),
       ],
     );
   }
@@ -334,3 +334,4 @@ class FeatureEnablementDialog extends ConsumerWidget {
     }
   }
 }
+

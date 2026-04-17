@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
 import 'package:flux/models/device.dart';
 import 'base_service.dart';
@@ -12,16 +13,25 @@ class BluetoothService extends BaseService {
 
   BluetoothService._internal();
 
-  /// Stream of discovered devices
+  final _connectionStateController =
+      StreamController<Map<String, dynamic>>.broadcast();
+
+  @override
+  Future<void> initialize() async {
+    // Listen to all device connection states globally if supported by FBP version
+    // For now, we will manually emit events on connect/disconnect calls
+  }
+
+  /// Stream of discovered devices using onScanResults (fresh results)
   Stream<List<Device>> get discoveredDevicesStream {
-    return fbp.FlutterBluePlus.scanResults.map((results) {
+    return fbp.FlutterBluePlus.onScanResults.map((results) {
       final devices = <Device>[];
       for (final result in results) {
         devices.add(
           Device(
             id: result.device.remoteId.str,
-            name: result.device.name.isNotEmpty
-                ? result.device.name
+            name: result.device.platformName.isNotEmpty
+                ? result.device.platformName
                 : 'Unknown',
             ipAddress: '0.0.0.0',
             port: 5000,
@@ -37,17 +47,22 @@ class BluetoothService extends BaseService {
     });
   }
 
+  /// Stream of Bluetooth adapter state changes
+  Stream<fbp.BluetoothAdapterState> get adapterStateStream {
+    return fbp.FlutterBluePlus.adapterState;
+  }
+
   /// Stream of connection state changes
   Stream<Map<String, dynamic>> get connectionStateStream {
-    return Stream.empty();
+    return _connectionStateController.stream;
   }
 
   /// Check if Bluetooth is available
   Future<bool> isBluetoothAvailable() async {
     try {
-      final isAvailable = await fbp.FlutterBluePlus.isAvailable;
-      logDebug('Bluetooth available: $isAvailable');
-      return isAvailable;
+      final isSupported = await fbp.FlutterBluePlus.isSupported;
+      logDebug('Bluetooth supported: $isSupported');
+      return isSupported;
     } catch (e) {
       logError('Failed to check Bluetooth availability', e);
       return false;
@@ -57,7 +72,8 @@ class BluetoothService extends BaseService {
   /// Check if Bluetooth is turned on
   Future<bool> isBluetoothOn() async {
     try {
-      final isOn = await fbp.FlutterBluePlus.isOn;
+      final adapterState = await fbp.FlutterBluePlus.adapterState.first;
+      final isOn = adapterState == fbp.BluetoothAdapterState.on;
       logDebug('Bluetooth on: $isOn');
       return isOn;
     } catch (e) {
@@ -71,11 +87,19 @@ class BluetoothService extends BaseService {
     Duration timeout = const Duration(seconds: 10),
   }) async {
     try {
+      // Check if Bluetooth is enabled first
+      final adapterState = await fbp.FlutterBluePlus.adapterState.first;
+      if (adapterState != fbp.BluetoothAdapterState.on) {
+        logError('Bluetooth is not enabled', null);
+        throw Exception('Bluetooth is not enabled');
+      }
+
       logInfo('Starting Bluetooth scan...');
       await fbp.FlutterBluePlus.startScan(timeout: timeout);
       logInfo('Bluetooth scan started');
     } catch (e) {
       logError('Failed to start Bluetooth scan', e);
+      rethrow;
     }
   }
 
@@ -87,6 +111,7 @@ class BluetoothService extends BaseService {
       logInfo('Bluetooth scan stopped');
     } catch (e) {
       logError('Failed to stop Bluetooth scan', e);
+      rethrow;
     }
   }
 
@@ -98,21 +123,23 @@ class BluetoothService extends BaseService {
       logInfo('Device discovery started');
     } catch (e) {
       logError('Failed to start device discovery', e);
+      rethrow;
     }
   }
 
   /// Get stream of discovered devices (raw scan results)
   Stream<List<fbp.ScanResult>> get scanResults =>
-      fbp.FlutterBluePlus.scanResults;
+      fbp.FlutterBluePlus.onScanResults;
 
   /// Connect to a device by BluetoothDevice
   Future<void> connectToDevice(fbp.BluetoothDevice device) async {
     try {
-      logInfo('Connecting to device: ${device.name}');
+      logInfo('Connecting to device: ${device.platformName}');
       await device.connect();
-      logInfo('Connected to device: ${device.name}');
+      logInfo('Connected to device: ${device.platformName}');
     } catch (e) {
       logError('Failed to connect to device', e);
+      rethrow;
     }
   }
 
@@ -124,20 +151,26 @@ class BluetoothService extends BaseService {
         remoteId: fbp.DeviceIdentifier(deviceId),
       );
       await device.connect();
+      _connectionStateController.add({
+        'deviceId': deviceId,
+        'isConnected': true,
+      });
       logInfo('Connected to device: $deviceId');
     } catch (e) {
       logError('Failed to connect to device', e);
+      rethrow;
     }
   }
 
   /// Disconnect from a device by BluetoothDevice
   Future<void> disconnectFromDevice(fbp.BluetoothDevice device) async {
     try {
-      logInfo('Disconnecting from device: ${device.name}');
+      logInfo('Disconnecting from device: ${device.platformName}');
       await device.disconnect();
-      logInfo('Disconnected from device: ${device.name}');
+      logInfo('Disconnected from device: ${device.platformName}');
     } catch (e) {
       logError('Failed to disconnect from device', e);
+      rethrow;
     }
   }
 
@@ -149,16 +182,21 @@ class BluetoothService extends BaseService {
         remoteId: fbp.DeviceIdentifier(deviceId),
       );
       await device.disconnect();
+      _connectionStateController.add({
+        'deviceId': deviceId,
+        'isConnected': false,
+      });
       logInfo('Disconnected from device: $deviceId');
     } catch (e) {
       logError('Failed to disconnect from device', e);
+      rethrow;
     }
   }
 
   /// Get connected devices
   Future<List<fbp.BluetoothDevice>> getConnectedDevices() async {
     try {
-      final devices = await fbp.FlutterBluePlus.connectedDevices;
+      final devices = fbp.FlutterBluePlus.connectedDevices;
       logDebug('Connected devices: ${devices.length}');
       return devices;
     } catch (e) {
@@ -172,7 +210,7 @@ class BluetoothService extends BaseService {
     fbp.BluetoothDevice device,
   ) async {
     try {
-      logInfo('Getting services for device: ${device.name}');
+      logInfo('Getting services for device: ${device.platformName}');
       final services = await device.discoverServices();
       logInfo('Found ${services.length} services');
       return services;

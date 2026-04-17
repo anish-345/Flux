@@ -1,77 +1,89 @@
+import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flux/models/file_metadata.dart';
 import 'package:flux/utils/logger.dart';
 
-/// Provider for managing active file transfers
+/// Provider for managing active file transfers with proper async handling
 final fileTransferProvider =
-    StateNotifierProvider<FileTransferNotifier, List<TransferStatus>>((ref) {
-      return FileTransferNotifier();
-    });
+    AsyncNotifierProvider<FileTransferNotifier, List<TransferStatus>>(
+      FileTransferNotifier.new,
+    );
 
 /// Provider for getting transfer history
 final transferHistoryProvider =
-    StateNotifierProvider<TransferHistoryNotifier, List<TransferHistory>>((
-      ref,
-    ) {
-      return TransferHistoryNotifier();
-    });
+    AsyncNotifierProvider<TransferHistoryNotifier, List<TransferHistory>>(
+      TransferHistoryNotifier.new,
+    );
 
 /// Provider for getting active transfers only
-final activeTransfersProvider = Provider<List<TransferStatus>>((ref) {
+final activeTransfersProvider = Provider<AsyncValue<List<TransferStatus>>>((
+  ref,
+) {
   final transfers = ref.watch(fileTransferProvider);
-  return transfers.where((t) => t.state.isActive).toList();
+  return transfers.whenData(
+    (list) => list.where((t) => t.state.isActive).toList(),
+  );
 });
 
 /// Provider for getting completed transfers
-final completedTransfersProvider = Provider<List<TransferStatus>>((ref) {
+final completedTransfersProvider = Provider<AsyncValue<List<TransferStatus>>>((
+  ref,
+) {
   final transfers = ref.watch(fileTransferProvider);
-  return transfers.where((t) => t.state.isTerminal).toList();
+  return transfers.whenData(
+    (list) => list.where((t) => t.state.isTerminal).toList(),
+  );
 });
 
 /// Provider for getting total transfer progress
 final totalTransferProgressProvider = Provider<double>((ref) {
   final transfers = ref.watch(fileTransferProvider);
-  if (transfers.isEmpty) return 0.0;
 
-  final totalBytes = transfers.fold<int>(0, (sum, t) => sum + t.totalBytes);
-  final transferredBytes = transfers.fold<int>(
-    0,
-    (sum, t) => sum + t.transferredBytes,
+  return transfers.when(
+    data: (list) {
+      if (list.isEmpty) return 0.0;
+      final totalBytes = list.fold<int>(0, (sum, t) => sum + t.totalBytes);
+      final transferredBytes = list.fold<int>(
+        0,
+        (sum, t) => sum + t.transferredBytes,
+      );
+      if (totalBytes == 0) return 0.0;
+      return transferredBytes / totalBytes;
+    },
+    loading: () => 0.0,
+    error: (error, stackTrace) => 0.0,
   );
-
-  if (totalBytes == 0) return 0.0;
-  return transferredBytes / totalBytes;
 });
 
-class FileTransferNotifier extends StateNotifier<List<TransferStatus>> {
-  FileTransferNotifier() : super([]);
+class FileTransferNotifier extends AsyncNotifier<List<TransferStatus>> {
+  @override
+  FutureOr<List<TransferStatus>> build() async {
+    // Initialize from storage or return empty list
+    return [];
+  }
 
   Future<void> addTransfer(TransferStatus transfer) async {
-    try {
-      state = [...state, transfer];
+    state = await AsyncValue.guard(() async {
+      final current = await future;
       AppLogger.info('Transfer added: ${transfer.fileId}');
-    } catch (e) {
-      AppLogger.error('Failed to add transfer', e);
-      rethrow;
-    }
+      return [...current, transfer];
+    });
   }
 
   Future<void> updateTransfer(
     String fileId,
     TransferStatus updatedTransfer,
   ) async {
-    try {
-      state = state.map((transfer) {
+    state = await AsyncValue.guard(() async {
+      final current = await future;
+      AppLogger.info('Transfer updated: $fileId');
+      return current.map((transfer) {
         if (transfer.fileId == fileId) {
           return updatedTransfer;
         }
         return transfer;
       }).toList();
-      AppLogger.info('Transfer updated: $fileId');
-    } catch (e) {
-      AppLogger.error('Failed to update transfer', e);
-      rethrow;
-    }
+    });
   }
 
   Future<void> updateTransferProgress(
@@ -80,8 +92,9 @@ class FileTransferNotifier extends StateNotifier<List<TransferStatus>> {
     double speed,
     int remainingSeconds,
   ) async {
-    try {
-      state = state.map((transfer) {
+    state = await AsyncValue.guard(() async {
+      final current = await future;
+      return current.map((transfer) {
         if (transfer.fileId == fileId) {
           return transfer.copyWith(
             transferredBytes: transferredBytes,
@@ -91,60 +104,53 @@ class FileTransferNotifier extends StateNotifier<List<TransferStatus>> {
         }
         return transfer;
       }).toList();
-    } catch (e) {
-      AppLogger.error('Failed to update transfer progress', e);
-      rethrow;
-    }
+    });
   }
 
   Future<void> pauseTransfer(String fileId) async {
-    try {
-      state = state.map((transfer) {
+    state = await AsyncValue.guard(() async {
+      final current = await future;
+      AppLogger.info('Transfer paused: $fileId');
+      return current.map((transfer) {
         if (transfer.fileId == fileId) {
           return transfer.copyWith(state: TransferState.paused);
         }
         return transfer;
       }).toList();
-      AppLogger.info('Transfer paused: $fileId');
-    } catch (e) {
-      AppLogger.error('Failed to pause transfer', e);
-      rethrow;
-    }
+    });
   }
 
   Future<void> resumeTransfer(String fileId) async {
-    try {
-      state = state.map((transfer) {
+    state = await AsyncValue.guard(() async {
+      final current = await future;
+      AppLogger.info('Transfer resumed: $fileId');
+      return current.map((transfer) {
         if (transfer.fileId == fileId) {
           return transfer.copyWith(state: TransferState.inProgress);
         }
         return transfer;
       }).toList();
-      AppLogger.info('Transfer resumed: $fileId');
-    } catch (e) {
-      AppLogger.error('Failed to resume transfer', e);
-      rethrow;
-    }
+    });
   }
 
   Future<void> cancelTransfer(String fileId) async {
-    try {
-      state = state.map((transfer) {
+    state = await AsyncValue.guard(() async {
+      final current = await future;
+      AppLogger.info('Transfer cancelled: $fileId');
+      return current.map((transfer) {
         if (transfer.fileId == fileId) {
           return transfer.copyWith(state: TransferState.cancelled);
         }
         return transfer;
       }).toList();
-      AppLogger.info('Transfer cancelled: $fileId');
-    } catch (e) {
-      AppLogger.error('Failed to cancel transfer', e);
-      rethrow;
-    }
+    });
   }
 
   Future<void> completeTransfer(String fileId) async {
-    try {
-      state = state.map((transfer) {
+    state = await AsyncValue.guard(() async {
+      final current = await future;
+      AppLogger.info('Transfer completed: $fileId');
+      return current.map((transfer) {
         if (transfer.fileId == fileId) {
           return transfer.copyWith(
             state: TransferState.completed,
@@ -153,16 +159,14 @@ class FileTransferNotifier extends StateNotifier<List<TransferStatus>> {
         }
         return transfer;
       }).toList();
-      AppLogger.info('Transfer completed: $fileId');
-    } catch (e) {
-      AppLogger.error('Failed to complete transfer', e);
-      rethrow;
-    }
+    });
   }
 
   Future<void> failTransfer(String fileId, String error) async {
-    try {
-      state = state.map((transfer) {
+    state = await AsyncValue.guard(() async {
+      final current = await future;
+      AppLogger.info('Transfer failed: $fileId - $error');
+      return current.map((transfer) {
         if (transfer.fileId == fileId) {
           return transfer.copyWith(
             state: TransferState.failed,
@@ -172,120 +176,140 @@ class FileTransferNotifier extends StateNotifier<List<TransferStatus>> {
         }
         return transfer;
       }).toList();
-      AppLogger.info('Transfer failed: $fileId - $error');
-    } catch (e) {
-      AppLogger.error('Failed to mark transfer as failed', e);
-      rethrow;
-    }
+    });
   }
 
   Future<void> removeTransfer(String fileId) async {
-    try {
-      state = state.where((transfer) => transfer.fileId != fileId).toList();
+    state = await AsyncValue.guard(() async {
+      final current = await future;
       AppLogger.info('Transfer removed: $fileId');
-    } catch (e) {
-      AppLogger.error('Failed to remove transfer', e);
-      rethrow;
-    }
+      return current.where((transfer) => transfer.fileId != fileId).toList();
+    });
   }
 
   Future<void> clearCompletedTransfers() async {
-    try {
-      state = state.where((transfer) => !transfer.state.isTerminal).toList();
+    state = await AsyncValue.guard(() async {
+      final current = await future;
       AppLogger.info('Completed transfers cleared');
-    } catch (e) {
-      AppLogger.error('Failed to clear completed transfers', e);
-      rethrow;
-    }
+      return current.where((transfer) => !transfer.state.isTerminal).toList();
+    });
   }
 
   TransferStatus? getTransferById(String fileId) {
-    try {
-      return state.firstWhere((transfer) => transfer.fileId == fileId);
-    } catch (e) {
-      return null;
-    }
+    return state.whenData((transfers) {
+      try {
+        return transfers.firstWhere((transfer) => transfer.fileId == fileId);
+      } catch (e) {
+        return null;
+      }
+    }).value;
   }
 
   int getActiveTransfersCount() {
-    return state.where((transfer) => transfer.state.isActive).length;
+    return state.whenData((transfers) {
+          return transfers.where((transfer) => transfer.state.isActive).length;
+        }).value ??
+        0;
   }
 
   double getTotalTransferProgress() {
-    if (state.isEmpty) return 0.0;
-    final totalBytes = state.fold<int>(0, (sum, t) => sum + t.totalBytes);
-    final transferredBytes = state.fold<int>(
-      0,
-      (sum, t) => sum + t.transferredBytes,
-    );
-    if (totalBytes == 0) return 0.0;
-    return transferredBytes / totalBytes;
+    return state.whenData((transfers) {
+          if (transfers.isEmpty) return 0.0;
+          final totalBytes = transfers.fold<int>(
+            0,
+            (sum, t) => sum + t.totalBytes,
+          );
+          final transferredBytes = transfers.fold<int>(
+            0,
+            (sum, t) => sum + t.transferredBytes,
+          );
+          if (totalBytes == 0) return 0.0;
+          return transferredBytes / totalBytes;
+        }).value ??
+        0.0;
   }
 }
 
-class TransferHistoryNotifier extends StateNotifier<List<TransferHistory>> {
-  TransferHistoryNotifier() : super([]);
+class TransferHistoryNotifier extends AsyncNotifier<List<TransferHistory>> {
+  @override
+  FutureOr<List<TransferHistory>> build() async {
+    // Initialize from storage or return empty list
+    return [];
+  }
 
   Future<void> addHistoryEntry(TransferHistory entry) async {
-    try {
-      state = [entry, ...state];
+    state = await AsyncValue.guard(() async {
+      final current = await future;
       AppLogger.info('History entry added: ${entry.id}');
-    } catch (e) {
-      AppLogger.error('Failed to add history entry', e);
-      rethrow;
-    }
+      return [entry, ...current];
+    });
   }
 
   Future<void> clearHistory() async {
-    try {
-      state = [];
+    state = await AsyncValue.guard(() async {
       AppLogger.info('Transfer history cleared');
-    } catch (e) {
-      AppLogger.error('Failed to clear history', e);
-      rethrow;
-    }
+      return [];
+    });
   }
 
   Future<void> removeHistoryEntry(String entryId) async {
-    try {
-      state = state.where((entry) => entry.id != entryId).toList();
+    state = await AsyncValue.guard(() async {
+      final current = await future;
       AppLogger.info('History entry removed: $entryId');
-    } catch (e) {
-      AppLogger.error('Failed to remove history entry', e);
-      rethrow;
-    }
+      return current.where((entry) => entry.id != entryId).toList();
+    });
   }
 
   List<TransferHistory> getHistoryByDevice(String deviceId) {
-    return state.where((entry) => entry.deviceId == deviceId).toList();
+    return state.whenData((history) {
+          return history.where((entry) => entry.deviceId == deviceId).toList();
+        }).value ??
+        [];
   }
 
   List<TransferHistory> getHistoryByDirection(TransferDirection direction) {
-    return state.where((entry) => entry.direction == direction).toList();
+    return state.whenData((history) {
+          return history
+              .where((entry) => entry.direction == direction)
+              .toList();
+        }).value ??
+        [];
   }
 
   List<TransferHistory> getHistoryByDateRange(
     DateTime startDate,
     DateTime endDate,
   ) {
-    return state
-        .where(
-          (entry) =>
-              entry.timestamp.isAfter(startDate) &&
-              entry.timestamp.isBefore(endDate),
-        )
-        .toList();
+    return state.whenData((history) {
+          return history
+              .where(
+                (entry) =>
+                    entry.timestamp.isAfter(startDate) &&
+                    entry.timestamp.isBefore(endDate),
+              )
+              .toList();
+        }).value ??
+        [];
   }
 
   int getSuccessfulTransfersCount() {
-    return state.where((entry) => entry.success).length;
+    return state.whenData((history) {
+          return history.where((entry) => entry.success).length;
+        }).value ??
+        0;
   }
 
   int getFailedTransfersCount() {
-    return state.where((entry) => !entry.success).length;
+    return state.whenData((history) {
+          return history.where((entry) => !entry.success).length;
+        }).value ??
+        0;
   }
 
   int getTotalBytesTransferred() {
-    return state.fold<int>(0, (sum, entry) => sum + entry.fileSize);
+    return state.whenData((history) {
+          return history.fold<int>(0, (sum, entry) => sum + entry.fileSize);
+        }).value ??
+        0;
   }
 }

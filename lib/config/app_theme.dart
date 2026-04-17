@@ -109,7 +109,6 @@ class AppTheme {
         tertiary: accentColor,
         error: errorColor,
         surface: surfaceColor,
-        background: backgroundColor,
       ),
       appBarTheme: AppBarTheme(
         backgroundColor: surfaceColor,
@@ -205,7 +204,6 @@ class AppTheme {
         tertiary: accentColor,
         error: errorColor,
         surface: const Color(0xFF1E293B),
-        background: const Color(0xFF0F172A),
       ),
     );
   }

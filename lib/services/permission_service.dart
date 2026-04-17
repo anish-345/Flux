@@ -110,7 +110,7 @@ class PermissionService extends BaseService {
   }
 
   /// Open app settings
-  Future<void> openAppSettings() async {
+  Future<void> openSystemSettings() async {
     try {
       logInfo('Opening app settings...');
       await openAppSettings();

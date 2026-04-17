@@ -5,6 +5,7 @@ import 'package:flux/config/app_theme.dart';
 import 'package:flux/utils/logger.dart';
 import 'package:flux/services/permission_service.dart';
 import 'package:flux/services/connectivity_service.dart';
+import 'package:flux/services/bluetooth_service.dart';
 import 'package:flux/providers/settings_provider.dart';
 import 'package:flux/screens/home_screen.dart';
 
@@ -14,9 +15,10 @@ Future<void> main() async {
   // Initialize Rust bridge
   try {
     await RustLib.init();
-    AppLogger.info('Rust bridge initialized successfully');
+    AppLogger.info('✅ Rust bridge initialized successfully');
   } catch (e) {
-    AppLogger.error('Failed to initialize Rust bridge', e);
+    AppLogger.error('❌ Failed to initialize Rust bridge', e);
+    // Continue anyway - Rust features may not be critical
   }
 
   // Initialize services
@@ -26,19 +28,41 @@ Future<void> main() async {
 }
 
 Future<void> _initializeServices() async {
+  AppLogger.info('🚀 Initializing services...');
+
+  // Initialize permission service
   try {
-    AppLogger.info('Initializing services...');
-
-    // Initialize permission service
     await PermissionService().initialize();
-
-    // Initialize connectivity service
-    await ConnectivityService().initialize();
-
-    AppLogger.info('All services initialized successfully');
+    AppLogger.info('✅ Permission service initialized');
   } catch (e) {
-    AppLogger.error('Failed to initialize services', e);
+    AppLogger.error('⚠️ Failed to initialize permission service', e);
+    // Continue - permissions can be requested on-demand
   }
+
+  // Initialize connectivity service
+  try {
+    await ConnectivityService().initialize();
+    AppLogger.info('✅ Connectivity service initialized');
+  } catch (e) {
+    AppLogger.error('⚠️ Failed to initialize connectivity service', e);
+    // Continue - connectivity can be checked on-demand
+  }
+
+  // Initialize Bluetooth service
+  try {
+    final bluetoothService = BluetoothService();
+    final isAvailable = await bluetoothService.isBluetoothAvailable();
+    if (isAvailable) {
+      AppLogger.info('✅ Bluetooth service initialized');
+    } else {
+      AppLogger.info('⚠️ Bluetooth not available on this device');
+    }
+  } catch (e) {
+    AppLogger.error('⚠️ Failed to initialize Bluetooth service', e);
+    // Continue - Bluetooth is optional
+  }
+
+  AppLogger.info('✅ All services initialized');
 }
 
 class MyApp extends ConsumerWidget {

@@ -1,20 +1,20 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flux/models/file_metadata.dart';
 import 'package:flux/providers/file_transfer_provider.dart';
 
 void main() {
   group('FileTransferNotifier', () {
-    late FileTransferNotifier notifier;
-
-    setUp(() {
-      notifier = FileTransferNotifier();
-    });
-
-    test('initial state is empty', () {
-      expect(notifier.state, isEmpty);
+    test('initial state is empty', () async {
+      final container = ProviderContainer();
+      final state = await container.read(fileTransferProvider.future);
+      expect(state, isEmpty);
     });
 
     test('addTransfer adds a transfer to the list', () async {
+      final container = ProviderContainer();
+      final notifier = container.read(fileTransferProvider.notifier);
+
       final transfer = TransferStatus(
         fileId: 'test-1',
         fileName: 'test.txt',
@@ -26,11 +26,15 @@ void main() {
 
       await notifier.addTransfer(transfer);
 
-      expect(notifier.state, hasLength(1));
-      expect(notifier.state.first.fileId, 'test-1');
+      final state = await container.read(fileTransferProvider.future);
+      expect(state, hasLength(1));
+      expect(state.first.fileId, 'test-1');
     });
 
     test('updateTransfer modifies an existing transfer', () async {
+      final container = ProviderContainer();
+      final notifier = container.read(fileTransferProvider.notifier);
+
       final transfer = TransferStatus(
         fileId: 'test-1',
         fileName: 'test.txt',
@@ -45,10 +49,14 @@ void main() {
       final updated = transfer.copyWith(state: TransferState.inProgress);
       await notifier.updateTransfer('test-1', updated);
 
-      expect(notifier.state.first.state, TransferState.inProgress);
+      final state = await container.read(fileTransferProvider.future);
+      expect(state.first.state, TransferState.inProgress);
     });
 
     test('pauseTransfer changes state to paused', () async {
+      final container = ProviderContainer();
+      final notifier = container.read(fileTransferProvider.notifier);
+
       final transfer = TransferStatus(
         fileId: 'test-1',
         fileName: 'test.txt',
@@ -61,10 +69,14 @@ void main() {
       await notifier.addTransfer(transfer);
       await notifier.pauseTransfer('test-1');
 
-      expect(notifier.state.first.state, TransferState.paused);
+      final state = await container.read(fileTransferProvider.future);
+      expect(state.first.state, TransferState.paused);
     });
 
     test('resumeTransfer changes state to inProgress', () async {
+      final container = ProviderContainer();
+      final notifier = container.read(fileTransferProvider.notifier);
+
       final transfer = TransferStatus(
         fileId: 'test-1',
         fileName: 'test.txt',
@@ -77,10 +89,14 @@ void main() {
       await notifier.addTransfer(transfer);
       await notifier.resumeTransfer('test-1');
 
-      expect(notifier.state.first.state, TransferState.inProgress);
+      final state = await container.read(fileTransferProvider.future);
+      expect(state.first.state, TransferState.inProgress);
     });
 
     test('cancelTransfer changes state to cancelled', () async {
+      final container = ProviderContainer();
+      final notifier = container.read(fileTransferProvider.notifier);
+
       final transfer = TransferStatus(
         fileId: 'test-1',
         fileName: 'test.txt',
@@ -93,10 +109,14 @@ void main() {
       await notifier.addTransfer(transfer);
       await notifier.cancelTransfer('test-1');
 
-      expect(notifier.state.first.state, TransferState.cancelled);
+      final state = await container.read(fileTransferProvider.future);
+      expect(state.first.state, TransferState.cancelled);
     });
 
     test('removeTransfer removes a transfer from the list', () async {
+      final container = ProviderContainer();
+      final notifier = container.read(fileTransferProvider.notifier);
+
       final transfer = TransferStatus(
         fileId: 'test-1',
         fileName: 'test.txt',
@@ -110,10 +130,14 @@ void main() {
       await notifier.addTransfer(transfer);
       await notifier.removeTransfer('test-1');
 
-      expect(notifier.state, isEmpty);
+      final state = await container.read(fileTransferProvider.future);
+      expect(state, isEmpty);
     });
 
     test('getActiveTransfersCount returns correct count', () async {
+      final container = ProviderContainer();
+      final notifier = container.read(fileTransferProvider.notifier);
+
       final transfer1 = TransferStatus(
         fileId: 'test-1',
         fileName: 'test1.txt',
@@ -140,6 +164,9 @@ void main() {
     });
 
     test('getTotalTransferProgress calculates correctly', () async {
+      final container = ProviderContainer();
+      final notifier = container.read(fileTransferProvider.notifier);
+
       final transfer1 = TransferStatus(
         fileId: 'test-1',
         fileName: 'test1.txt',
@@ -167,17 +194,16 @@ void main() {
   });
 
   group('TransferHistoryNotifier', () {
-    late TransferHistoryNotifier notifier;
-
-    setUp(() {
-      notifier = TransferHistoryNotifier();
-    });
-
-    test('initial state is empty', () {
-      expect(notifier.state, isEmpty);
+    test('initial state is empty', () async {
+      final container = ProviderContainer();
+      final state = await container.read(transferHistoryProvider.future);
+      expect(state, isEmpty);
     });
 
     test('addHistoryEntry adds an entry', () async {
+      final container = ProviderContainer();
+      final notifier = container.read(transferHistoryProvider.notifier);
+
       final entry = TransferHistory(
         id: 'history-1',
         deviceId: 'device-1',
@@ -191,11 +217,15 @@ void main() {
 
       await notifier.addHistoryEntry(entry);
 
-      expect(notifier.state, hasLength(1));
-      expect(notifier.state.first.id, 'history-1');
+      final state = await container.read(transferHistoryProvider.future);
+      expect(state, hasLength(1));
+      expect(state.first.id, 'history-1');
     });
 
     test('getSuccessfulTransfersCount returns correct count', () async {
+      final container = ProviderContainer();
+      final notifier = container.read(transferHistoryProvider.notifier);
+
       final entry1 = TransferHistory(
         id: 'history-1',
         deviceId: 'device-1',
@@ -226,6 +256,9 @@ void main() {
     });
 
     test('getTotalBytesTransferred calculates correctly', () async {
+      final container = ProviderContainer();
+      final notifier = container.read(transferHistoryProvider.notifier);
+
       final entry1 = TransferHistory(
         id: 'history-1',
         deviceId: 'device-1',

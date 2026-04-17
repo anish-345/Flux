@@ -20,8 +20,8 @@ class ConnectionIndicator extends StatelessWidget {
         padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(
           color: isConnected
-              ? Colors.green.withOpacity(0.2)
-              : Colors.grey.withOpacity(0.2),
+              ? Colors.green.withValues(alpha: 0.2)
+              : Colors.grey.withValues(alpha: 0.2),
           borderRadius: BorderRadius.circular(8),
         ),
         child: Row(

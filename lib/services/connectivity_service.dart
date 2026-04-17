@@ -1,6 +1,10 @@
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:network_info_plus/network_info_plus.dart';
+import 'package:flux/services/bluetooth_service.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'base_service.dart';
+
+final connectivityServiceProvider = Provider((ref) => ConnectivityService());
 
 /// Service for managing network connectivity
 class ConnectivityService extends BaseService {
@@ -16,19 +20,18 @@ class ConnectivityService extends BaseService {
   final NetworkInfo _networkInfo = NetworkInfo();
 
   /// Stream of connectivity changes
-  Stream<List<ConnectivityResult>> get connectivityStream =>
-      _connectivity.onConnectivityChanged as Stream<List<ConnectivityResult>>;
+  Stream<ConnectivityResult> get connectivityStream =>
+      _connectivity.onConnectivityChanged;
 
   /// Get current connectivity status
-  Future<List<ConnectivityResult>> getConnectivityStatus() async {
+  Future<ConnectivityResult> getConnectivityStatus() async {
     try {
-      final result =
-          await _connectivity.checkConnectivity() as List<ConnectivityResult>;
+      final result = await _connectivity.checkConnectivity();
       logDebug('Connectivity status: $result');
       return result;
     } catch (e) {
       logError('Failed to get connectivity status', e);
-      return [];
+      return ConnectivityResult.none;
     }
   }
 
@@ -36,9 +39,9 @@ class ConnectivityService extends BaseService {
   Future<bool> isConnectedToInternet() async {
     try {
       final result = await getConnectivityStatus();
-      return result.contains(ConnectivityResult.mobile) ||
-          result.contains(ConnectivityResult.wifi) ||
-          result.contains(ConnectivityResult.ethernet);
+      return result == ConnectivityResult.mobile ||
+          result == ConnectivityResult.wifi ||
+          result == ConnectivityResult.ethernet;
     } catch (e) {
       logError('Failed to check internet connection', e);
       return false;
@@ -48,11 +51,11 @@ class ConnectivityService extends BaseService {
   /// Alias for isConnectedToInternet
   Future<bool> isInternetConnected() => isConnectedToInternet();
 
-  /// Check if Bluetooth is enabled (placeholder - requires platform-specific implementation)
+  /// Check if Bluetooth is enabled
   Future<bool> isBluetoothEnabled() async {
     try {
       logDebug('Checking Bluetooth enabled status');
-      return false;
+      return await BluetoothService().isBluetoothOn();
     } catch (e) {
       logError('Failed to check Bluetooth enabled status', e);
       return false;
@@ -63,7 +66,7 @@ class ConnectivityService extends BaseService {
   Future<bool> isConnectedToWiFi() async {
     try {
       final result = await getConnectivityStatus();
-      return result.contains(ConnectivityResult.wifi);
+      return result == ConnectivityResult.wifi;
     } catch (e) {
       logError('Failed to check WiFi connection', e);
       return false;
@@ -77,7 +80,7 @@ class ConnectivityService extends BaseService {
   Future<bool> isConnectedToMobile() async {
     try {
       final result = await getConnectivityStatus();
-      return result.contains(ConnectivityResult.mobile);
+      return result == ConnectivityResult.mobile;
     } catch (e) {
       logError('Failed to check mobile connection', e);
       return false;
@@ -136,8 +139,7 @@ class ConnectivityService extends BaseService {
   }
 
   /// Listen to connectivity changes
-  Stream<List<ConnectivityResult>> onConnectivityChanged() {
-    return _connectivity.onConnectivityChanged
-        as Stream<List<ConnectivityResult>>;
+  Stream<ConnectivityResult> onConnectivityChanged() {
+    return _connectivity.onConnectivityChanged;
   }
 }

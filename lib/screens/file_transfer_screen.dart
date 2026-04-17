@@ -7,6 +7,7 @@ import 'package:flux/providers/file_transfer_provider.dart';
 import 'package:flux/providers/device_provider.dart';
 import 'package:flux/widgets/transfer_progress_widget.dart';
 import 'package:flux/widgets/file_list_item.dart';
+import 'package:flux/services/transfer_engine_service.dart';
 import 'package:flux/utils/logger.dart';
 
 class FileTransferScreen extends ConsumerStatefulWidget {
@@ -83,23 +84,18 @@ class _FileTransferScreenState extends ConsumerState<FileTransferScreen>
     }
 
     try {
-      for (final file in _selectedFiles) {
-        final transfer = TransferStatus(
-          fileId: file.id,
-          fileName: file.name,
-          state: TransferState.pending,
-          totalBytes: file.size,
-          transferredBytes: 0,
-          startedAt: DateTime.now(),
-        );
-        await ref.read(fileTransferProvider.notifier).addTransfer(transfer);
-      }
+      final engine = ref.read(transferEngineServiceProvider);
+      await engine.startTransfer(_selectedDevice!.id, _selectedFiles);
 
       if (mounted) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('Transfer started')));
-        setState(() => _selectedFiles.clear());
+        setState(() {
+          _selectedFiles.clear();
+          // Switch to active transfers tab
+          _tabController.animateTo(1);
+        });
       }
     } catch (e) {
       AppLogger.error('Failed to start transfer', e);
@@ -113,7 +109,7 @@ class _FileTransferScreenState extends ConsumerState<FileTransferScreen>
 
   @override
   Widget build(BuildContext context) {
-    final activeTransfers = ref.watch(activeTransfersProvider);
+    final activeTransfersAsync = ref.watch(activeTransfersProvider);
     final connectedDevices = ref.watch(connectedDevicesProvider);
 
     return Scaffold(
@@ -127,7 +123,11 @@ class _FileTransferScreenState extends ConsumerState<FileTransferScreen>
               icon: const Icon(Icons.upload),
             ),
             Tab(
-              text: 'Active (${activeTransfers.length})',
+              text: activeTransfersAsync.when(
+                data: (transfers) => 'Active (${transfers.length})',
+                loading: () => 'Active (...)',
+                error: (error, stackTrace) => 'Active (Error)',
+              ),
               icon: const Icon(Icons.sync),
             ),
           ],
@@ -232,37 +232,63 @@ class _FileTransferScreenState extends ConsumerState<FileTransferScreen>
           ),
 
           // Active Transfers Tab
-          activeTransfers.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        Icons.check_circle,
-                        size: 64,
-                        color: Theme.of(context).colorScheme.outline,
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        'No active transfers',
-                        style: Theme.of(context).textTheme.bodyLarge,
-                      ),
-                    ],
+          activeTransfersAsync.when(
+            loading: () => const Center(child: CircularProgressIndicator()),
+            error: (error, stackTrace) => Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.error_outline,
+                    size: 64,
+                    color: Theme.of(context).colorScheme.error,
                   ),
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: activeTransfers.length,
-                  itemBuilder: (context, index) {
-                    final transfer = activeTransfers[index];
-                    return TransferProgressWidget(
-                      transfer: transfer,
-                      onPause: () => _handlePause(transfer.fileId),
-                      onResume: () => _handleResume(transfer.fileId),
-                      onCancel: () => _handleCancel(transfer.fileId),
-                    );
-                  },
-                ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Error loading transfers: $error',
+                    style: Theme.of(context).textTheme.bodyLarge,
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 16),
+                  ElevatedButton(
+                    onPressed: () => ref.refresh(activeTransfersProvider),
+                    child: const Text('Retry'),
+                  ),
+                ],
+              ),
+            ),
+            data: (activeTransfers) => activeTransfers.isEmpty
+                ? Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.check_circle,
+                          size: 64,
+                          color: Theme.of(context).colorScheme.outline,
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          'No active transfers',
+                          style: Theme.of(context).textTheme.bodyLarge,
+                        ),
+                      ],
+                    ),
+                  )
+                : ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: activeTransfers.length,
+                    itemBuilder: (context, index) {
+                      final transfer = activeTransfers[index];
+                      return TransferProgressWidget(
+                        transfer: transfer,
+                        onPause: () => _handlePause(transfer.fileId),
+                        onResume: () => _handleResume(transfer.fileId),
+                        onCancel: () => _handleCancel(transfer.fileId),
+                      );
+                    },
+                  ),
+          ),
         ],
       ),
     );
