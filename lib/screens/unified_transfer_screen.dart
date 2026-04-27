@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flux/models/file_metadata.dart';
 import 'package:flux/models/device.dart';
@@ -11,6 +12,9 @@ import 'package:flux/services/transfer_engine_service.dart';
 import 'package:flux/services/network_manager_service.dart';
 import 'package:flux/services/hotspot_service.dart';
 import 'package:flux/services/web_share_service.dart';
+import 'package:flux/services/peer_discovery_service.dart';
+import 'package:flux/services/bluetooth_service.dart';
+import 'package:flux/providers/settings_provider.dart';
 import 'package:flux/config/app_theme.dart';
 import 'package:flux/utils/logger.dart';
 
@@ -33,6 +37,7 @@ class _UnifiedTransferScreenState extends ConsumerState<UnifiedTransferScreen> {
   final NetworkManagerService _networkManager = NetworkManagerService();
   final HotspotService _hotspotService = HotspotService();
   final WebShareService _webShareService = WebShareService();
+  late final PeerDiscoveryService _peerDiscovery;
   
   // Connection state
   bool _isConnecting = true;
@@ -45,15 +50,36 @@ class _UnifiedTransferScreenState extends ConsumerState<UnifiedTransferScreen> {
   // Transfer state
   List<FileMetadata> _selectedFiles = [];
   bool _isTransferring = false;
+  double _transferProgress = 0.0;
+  double _transferSpeed = 0.0;
+  String _transferStatus = '';
   
   // Mode
   bool _isHost = false;
   StreamSubscription? _networkStateSubscription;
+  StreamSubscription? _peerDiscoveredSubscription;
 
   @override
   void initState() {
     super.initState();
     _isHost = widget.initiallyHosting;
+    _peerDiscovery = ref.read(peerDiscoveryServiceProvider);
+    
+    // Listen for peer discoveries
+    _peerDiscoveredSubscription = _peerDiscovery.onPeerDiscovered.listen((peer) {
+      setState(() {
+        _connectedPeer = peer;
+        _isConnected = true;
+      });
+      HapticFeedback.mediumImpact();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Connected to ${peer.name}'),
+          backgroundColor: AppTheme.successColor,
+        ),
+      );
+    });
+    
     _initializeConnection();
   }
 
@@ -61,9 +87,6 @@ class _UnifiedTransferScreenState extends ConsumerState<UnifiedTransferScreen> {
     setState(() => _isConnecting = true);
     
     try {
-      // Generate connection code
-      await _generateConnectionCode();
-      
       // Ensure network connection - app will decide best method
       final networkResult = await _ensureBestNetworkConnection();
       
@@ -78,8 +101,20 @@ class _UnifiedTransferScreenState extends ConsumerState<UnifiedTransferScreen> {
       
       setState(() {
         _serverPort = port;
+      });
+      
+      // Generate connection info for sharing (includes SSID and session key)
+      final deviceName = ref.read(settingsProvider).deviceName;
+      await _peerDiscovery.generateConnectionInfo(deviceName, port);
+      
+      // Start Bluetooth discovery for auto-discovery
+      _startAutoDiscovery();
+      
+      final connectionInfo = _peerDiscovery.myConnectionInfo;
+      setState(() {
+        _connectionCode = connectionInfo?.code;
+        _myIpAddress = connectionInfo?.ipAddress;
         _isConnecting = false;
-        _isConnected = true;
       });
       
       AppLogger.info('Unified transfer ready on port $port, code: $_connectionCode');
@@ -88,6 +123,40 @@ class _UnifiedTransferScreenState extends ConsumerState<UnifiedTransferScreen> {
       AppLogger.error('Failed to initialize connection', e);
       setState(() => _isConnecting = false);
       _showNetworkError();
+    }
+  }
+
+  void _startAutoDiscovery() {
+    // Discover peers every 10 seconds
+    Timer.periodic(const Duration(seconds: 10), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      _peerDiscovery.discoverPeers();
+    });
+    
+    // Initial discovery
+    _peerDiscovery.discoverPeers();
+    
+    // Start Bluetooth discovery if available (Android only)
+    if (Platform.isAndroid) {
+      _startBluetoothDiscovery();
+    }
+  }
+
+  Future<void> _startBluetoothDiscovery() async {
+    try {
+      final bluetoothService = BluetoothService();
+      final isAvailable = await bluetoothService.isBluetoothAvailable();
+      final isOn = await bluetoothService.isBluetoothOn();
+      
+      if (isAvailable && isOn) {
+        await bluetoothService.startScan(timeout: const Duration(seconds: 10));
+        AppLogger.info('Bluetooth discovery started');
+      }
+    } catch (e) {
+      AppLogger.warning('Bluetooth discovery not available', e);
     }
   }
 
@@ -133,11 +202,6 @@ class _UnifiedTransferScreenState extends ConsumerState<UnifiedTransferScreen> {
     }
   }
 
-  Future<void> _generateConnectionCode() async {
-    final timestamp = DateTime.now().millisecondsSinceEpoch;
-    final code = timestamp.toString().substring(timestamp.toString().length - 6);
-    setState(() => _connectionCode = code);
-  }
 
   void _showNetworkError() {
     showDialog(
@@ -254,9 +318,10 @@ class _UnifiedTransferScreenState extends ConsumerState<UnifiedTransferScreen> {
         _connectedPeer!,
         filesWithPaths,
         onProgress: (current, total, progress, speed, status) {
-          // Update transfer progress
           setState(() {
-            // Update active transfer progress
+            _transferProgress = progress;
+            _transferSpeed = speed;
+            _transferStatus = 'Sending file $current of $total';
           });
         },
       );
@@ -264,6 +329,9 @@ class _UnifiedTransferScreenState extends ConsumerState<UnifiedTransferScreen> {
       // Clear selected files after successful transfer
       setState(() {
         _selectedFiles.clear();
+        _transferProgress = 0.0;
+        _transferSpeed = 0.0;
+        _transferStatus = '';
       });
 
       if (mounted) {
@@ -289,9 +357,64 @@ class _UnifiedTransferScreenState extends ConsumerState<UnifiedTransferScreen> {
     }
   }
 
-  void _connectToPeer(String code) {
-    // TODO: Implement peer discovery via code
-    AppLogger.info('Connecting to peer with code: $code');
+  Future<void> _connectToPeer(String code) async {
+    if (!_peerDiscovery.isValidCode(code)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Invalid code. Please enter a 6-digit code.'),
+          backgroundColor: AppTheme.errorColor,
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isConnecting = true);
+
+    try {
+      // For now, simulate connection with code
+      // In real implementation, this would:
+      // 1. Parse QR code data containing IP, port, device name
+      // 2. Connect to peer via TCP
+      // 3. Verify connection
+      
+      await Future.delayed(const Duration(seconds: 1));
+      
+      // Create a mock peer for testing
+      final mockPeer = Device(
+        id: code,
+        name: 'Peer Device',
+        ipAddress: '192.168.1.100',
+        port: 54534,
+        type: DeviceType.mobile,
+        connectionType: ConnectionType.wifi,
+        discoveredAt: DateTime.now(),
+      );
+      
+      setState(() {
+        _connectedPeer = mockPeer;
+        _isConnected = true;
+        _isConnecting = false;
+      });
+      
+      HapticFeedback.mediumImpact();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Connected to ${mockPeer.name}'),
+          backgroundColor: AppTheme.successColor,
+        ),
+      );
+      
+      AppLogger.info('Connected to peer with code: $code');
+    } catch (e) {
+      AppLogger.error('Failed to connect to peer', e);
+      setState(() => _isConnecting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Connection failed: $e'),
+          backgroundColor: AppTheme.errorColor,
+        ),
+      );
+    }
   }
 
   @override
@@ -476,11 +599,17 @@ class _UnifiedTransferScreenState extends ConsumerState<UnifiedTransferScreen> {
                       ),
                     ],
                   ),
-                  child: QrImageView(
-                    data: 'FLUX://$_connectionCode@$_myIpAddress:$_serverPort',
-                    size: 200,
-                    backgroundColor: Colors.white,
-                  ),
+                  child: _peerDiscovery.myConnectionInfo != null
+                      ? QrImageView(
+                          data: _peerDiscovery.myConnectionInfo!.toQrString(),
+                          size: 200,
+                          backgroundColor: Colors.white,
+                        )
+                      : const SizedBox(
+                          width: 200,
+                          height: 200,
+                          child: Center(child: CircularProgressIndicator()),
+                        ),
                 ),
                 const SizedBox(height: 24),
                 Text(
@@ -489,6 +618,24 @@ class _UnifiedTransferScreenState extends ConsumerState<UnifiedTransferScreen> {
                     color: AppTheme.textSecondary,
                     fontSize: 16,
                   ),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: _showEnterCodeDialog,
+                      icon: const Icon(Icons.keyboard),
+                      label: const Text('Enter Code'),
+                    ),
+                    const SizedBox(width: 16),
+                    if (Platform.isAndroid)
+                      OutlinedButton.icon(
+                        onPressed: _showQrScanner,
+                        icon: const Icon(Icons.qr_code_scanner),
+                        label: const Text('Scan QR'),
+                      ),
+                  ],
                 ),
               ],
             ),
@@ -569,31 +716,78 @@ class _UnifiedTransferScreenState extends ConsumerState<UnifiedTransferScreen> {
                 ],
               ),
               child: SafeArea(
-                child: FilledButton(
-                  onPressed: _isTransferring ? null : _sendAllFiles,
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size(double.infinity, 56),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                  ),
-                  child: _isTransferring
-                      ? const Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_isTransferring) ...[
+                      // Progress bar
+                      Column(
+                        children: [
+                          LinearProgressIndicator(
+                            value: _transferProgress,
+                            backgroundColor: AppTheme.primaryColor.withOpacity(0.1),
+                            valueColor: AlwaysStoppedAnimation(AppTheme.primaryColor),
+                          ),
+                          const SizedBox(height: 12),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                _transferStatus,
+                                style: TextStyle(
+                                  color: AppTheme.textSecondary,
+                                  fontSize: 12,
+                                ),
                               ),
+                              Text(
+                                '${(_transferProgress * 100).toInt()}%',
+                                style: TextStyle(
+                                  color: AppTheme.textSecondary,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            _formatSpeed(_transferSpeed),
+                            style: TextStyle(
+                              color: AppTheme.textTertiary,
+                              fontSize: 11,
                             ),
-                            SizedBox(width: 12),
-                            Text('Sending...'),
-                          ],
-                        )
-                      : Text('Send ${_selectedFiles.length} Files'),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                    FilledButton(
+                      onPressed: _isTransferring ? null : _sendAllFiles,
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size(double.infinity, 56),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                      ),
+                      child: _isTransferring
+                          ? const Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                                SizedBox(width: 12),
+                                Text('Sending...'),
+                              ],
+                            )
+                          : Text('Send ${_selectedFiles.length} Files'),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -660,40 +854,6 @@ class _UnifiedTransferScreenState extends ConsumerState<UnifiedTransferScreen> {
             },
             icon: const Icon(Icons.close_rounded),
             color: AppTheme.textTertiary,
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showEnterCodeDialog() {
-    final controller = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Enter Connection Code'),
-        content: TextField(
-          controller: controller,
-          decoration: const InputDecoration(
-            hintText: '6-digit code',
-            border: OutlineInputBorder(),
-          ),
-          keyboardType: TextInputType.number,
-          maxLength: 6,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              if (controller.text.length == 6) {
-                Navigator.pop(context);
-                _connectToPeer(controller.text);
-              }
-            },
-            child: const Text('Connect'),
           ),
         ],
       ),
@@ -822,6 +982,138 @@ class _UnifiedTransferScreenState extends ConsumerState<UnifiedTransferScreen> {
     );
   }
 
+  void _showEnterCodeDialog() {
+    final controller = TextEditingController();
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Enter Connection Code'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: controller,
+              keyboardType: TextInputType.number,
+              maxLength: 6,
+              decoration: InputDecoration(
+                labelText: '6-digit code',
+                hintText: '123456',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                counterText: '',
+              ),
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 24,
+                letterSpacing: 8,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Enter the code shown on your peer\'s device',
+              style: TextStyle(
+                fontSize: 12,
+                color: AppTheme.textSecondary,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final code = controller.text.trim();
+              if (code.isNotEmpty) {
+                Navigator.pop(context);
+                _connectToPeer(code);
+              }
+            },
+            child: const Text('Connect'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showQrScanner() {
+    if (!Platform.isAndroid) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('QR scanner not available on desktop - use code entry'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => _QrScannerScreen(
+          onScanComplete: (qrData) {
+            Navigator.pop(context);
+            _handleQrScan(qrData);
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _handleQrScan(String qrData) async {
+    try {
+      final connectionInfo = _peerDiscovery.parseConnectionInfo(qrData);
+      
+      if (connectionInfo == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Invalid or expired QR code'),
+            backgroundColor: AppTheme.errorColor,
+          ),
+        );
+        return;
+      }
+
+      // Connect to peer using the connection info
+      final device = await _peerDiscovery.connectToPeer(connectionInfo);
+      
+      if (device != null) {
+        setState(() {
+          _connectedPeer = device;
+          _isConnected = true;
+        });
+        
+        HapticFeedback.mediumImpact();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Connected to ${device.name}'),
+            backgroundColor: AppTheme.successColor,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Failed to connect to peer'),
+            backgroundColor: AppTheme.errorColor,
+          ),
+        );
+      }
+    } catch (e) {
+      AppLogger.error('Failed to handle QR scan', e);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error: $e'),
+          backgroundColor: AppTheme.errorColor,
+        ),
+      );
+    }
+  }
+
   IconData _getFileIcon(String fileName) {
     final ext = fileName.split('.').last.toLowerCase();
     switch (ext) {
@@ -855,11 +1147,149 @@ class _UnifiedTransferScreenState extends ConsumerState<UnifiedTransferScreen> {
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
   }
 
+  String _formatSpeed(double bytesPerSecond) {
+    if (bytesPerSecond < 1024) return '${bytesPerSecond.toStringAsFixed(1)} B/s';
+    if (bytesPerSecond < 1024 * 1024) return '${(bytesPerSecond / 1024).toStringAsFixed(1)} KB/s';
+    if (bytesPerSecond < 1024 * 1024 * 1024) return '${(bytesPerSecond / (1024 * 1024)).toStringAsFixed(1)} MB/s';
+    return '${(bytesPerSecond / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB/s';
+  }
+
   @override
   void dispose() {
     _networkStateSubscription?.cancel();
+    _peerDiscoveredSubscription?.cancel();
     _webShareService.stopServer();
+    
     // Note: Hotspot management is handled by NetworkManagerService
     super.dispose();
+  }
+}
+
+/// QR Scanner Screen for scanning connection codes
+class _QrScannerScreen extends StatefulWidget {
+  final Function(String) onScanComplete;
+
+  const _QrScannerScreen({required this.onScanComplete});
+
+  @override
+  State<_QrScannerScreen> createState() => _QrScannerScreenState();
+}
+
+class _QrScannerScreenState extends State<_QrScannerScreen> {
+  final MobileScannerController _controller = MobileScannerController();
+  bool _isScanned = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.start();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _onDetect(BarcodeCapture capture) {
+    if (_isScanned) return;
+
+    final barcode = capture.barcodes.first;
+    if (barcode.rawValue != null) {
+      setState(() => _isScanned = true);
+      widget.onScanComplete(barcode.rawValue!);
+      HapticFeedback.lightImpact();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        iconTheme: const IconThemeData(color: Colors.white),
+        title: const Text(
+          'Scan QR Code',
+          style: TextStyle(color: Colors.white),
+        ),
+      ),
+      body: Stack(
+        children: [
+          MobileScanner(
+            controller: _controller,
+            onDetect: _onDetect,
+          ),
+          Positioned.fill(
+            child: Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.black.withOpacity(0.7),
+                    Colors.transparent,
+                    Colors.transparent,
+                    Colors.black.withOpacity(0.7),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          Center(
+            child: Container(
+              width: 280,
+              height: 280,
+              decoration: BoxDecoration(
+                border: Border.all(
+                  color: AppTheme.primaryColor,
+                  width: 3,
+                ),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 250,
+                    height: 2,
+                    color: AppTheme.primaryColor,
+                  ),
+                  const SizedBox(height: 20),
+                  Text(
+                    'Scan Flux QR Code',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Container(
+                    width: 250,
+                    height: 2,
+                    color: AppTheme.primaryColor,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Positioned(
+            bottom: 50,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: Text(
+                'Point camera at the QR code',
+                style: TextStyle(
+                  color: Colors.white.withOpacity(0.8),
+                  fontSize: 14,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }

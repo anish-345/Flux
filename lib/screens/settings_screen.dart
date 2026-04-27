@@ -1,5 +1,7 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:file_selector/file_selector.dart';
 import 'package:flux/providers/settings_provider.dart';
 import 'package:flux/utils/logger.dart';
 
@@ -46,6 +48,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
           // Transfer Settings Section
           _buildSectionHeader(context, 'Transfer'),
+          _buildDownloadDirectoryTile(context, settings),
           _buildAutoAcceptTile(context, settings),
           _buildMaxConcurrentTransfersTile(context, settings),
           _buildEncryptionTile(context, settings),
@@ -105,6 +108,34 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             onPressed: () => _updateDeviceName(),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildDownloadDirectoryTile(BuildContext context, AppSettings settings) {
+    return ListTile(
+      title: const Text('Download Directory'),
+      subtitle: Text(
+        settings.downloadDirectory ?? 'Default (Downloads/FluxShare)',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (settings.downloadDirectory != null)
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              onPressed: () {
+                ref.read(settingsProvider.notifier).updateDownloadDirectory(null);
+              },
+              tooltip: 'Reset to default',
+            ),
+          IconButton(
+            icon: const Icon(Icons.folder_open),
+            onPressed: () => _selectDownloadDirectory(context),
+          ),
+        ],
       ),
     );
   }
@@ -240,22 +271,30 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
-  Future<void> _updateDeviceName() async {
+  void _updateDeviceName() {
+    ref.read(settingsProvider.notifier).updateDeviceName(_deviceNameController.text);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Device name updated')),
+    );
+  }
+
+  Future<void> _selectDownloadDirectory(BuildContext context) async {
     try {
-      await ref
-          .read(settingsProvider.notifier)
-          .updateDeviceName(_deviceNameController.text);
-      if (mounted && context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('Device name updated')));
+      final directory = await getDirectoryPath();
+      if (directory != null) {
+        await ref.read(settingsProvider.notifier).updateDownloadDirectory(directory);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Download directory set to: $directory')),
+          );
+        }
       }
     } catch (e) {
-      AppLogger.error('Failed to update device name', e);
-      if (mounted && context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Failed to update: $e')));
+      AppLogger.error('Failed to select directory', e);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to select directory: $e')),
+        );
       }
     }
   }

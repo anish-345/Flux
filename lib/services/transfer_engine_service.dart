@@ -3,11 +3,10 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flux/models/file_metadata.dart';
 import 'package:flux/models/device.dart';
-import 'package:flux/providers/file_transfer_provider.dart';
-import 'package:flux/providers/device_provider.dart';
 import 'package:flux/services/network_transfer_service.dart';
 import 'package:flux/services/progress_tracking_service.dart';
 import 'package:flux/services/network_manager_service.dart';
+import 'package:flux/providers/transfer_history_provider.dart';
 import 'package:flux/utils/logger.dart';
 
 /// Provider for the transfer engine service
@@ -18,11 +17,13 @@ final transferEngineServiceProvider = Provider<TransferEngineService>((ref) {
 /// Service that handles actual file transfers over network
 class TransferEngineService {
   final Ref _ref;
-  final NetworkTransferService _networkService = NetworkTransferService();
+  late final NetworkTransferService _networkService;
   final ProgressTrackingService _progressService = ProgressTrackingService();
   final NetworkManagerService _networkManager = NetworkManagerService();
 
-  TransferEngineService(this._ref);
+  TransferEngineService(this._ref) {
+    _networkService = NetworkTransferService(_ref);
+  }
 
   /// Start server to receive files
   Future<int> startReceiving() async {
@@ -62,71 +63,43 @@ class TransferEngineService {
         throw Exception('No network connection available');
       }
 
-      final notifier = _ref.read(fileTransferProvider.notifier);
-      final totalBytes = files.fold<int>(0, (sum, f) => sum + f.key.size);
-      int totalSentBytes = 0;
+      AppLogger.info('Starting transfer of ${files.length} files to ${targetDevice.name}');
 
-      for (int i = 0; i < files.length; i++) {
-        final file = files[i].key;
-        final filePath = files[i].value;
+      int currentFile = 1;
+      for (final entry in files) {
+        final file = entry.key;
+        final filePath = entry.value;
 
-        // Add to active transfers
-        final initialStatus = TransferStatus(
-          fileId: file.id,
+        // Create transfer history record
+        final transferId = DateTime.now().millisecondsSinceEpoch.toString();
+        final transfer = TransferHistory(
+          id: transferId,
+          deviceId: targetDevice.id,
+          deviceName: targetDevice.name,
           fileName: file.name,
-          state: TransferState.inProgress,
-          totalBytes: file.size,
-          transferredBytes: 0,
-          startedAt: DateTime.now(),
+          fileSize: file.size,
+          direction: TransferDirection.send,
+          timestamp: DateTime.now(),
+          success: false,
         );
-        await notifier.addTransfer(initialStatus);
+        _ref.read(transferHistoryProvider.notifier).addTransfer(transfer);
 
-        // Start progress tracking
-        _progressService.startTracking(file.id, file.size);
-        
-        onProgress?.call(i + 1, files.length, 0.0, 0.0, 'Connecting to ${targetDevice.name}...');
+        AppLogger.info('Sending file ${currentFile}/${files.length}: ${file.name}');
 
         try {
-          // Send the file using network transfer
           await _networkService.sendFile(
             targetDevice.ipAddress,
             targetDevice.port,
             file,
             filePath,
             onProgress: (progress, speed) {
-              final fileSentBytes = (progress * file.size).toInt();
-              totalSentBytes += fileSentBytes;
-              final totalProgress = totalSentBytes / totalBytes;
-
-              // Update progress tracking
-              _progressService.updateProgress(file.id, fileSentBytes);
-              
-              // Update UI through provider
-              notifier.updateTransferProgress(
-                file.id,
-                fileSentBytes,
-                speed,
-                speed > 0 ? ((file.size - fileSentBytes) / speed).toInt() : 0,
-              );
-
-              onProgress?.call(
-                i + 1,
-                files.length,
-                progress,
-                speed,
-                'Transferring ${file.name}...',
-              );
+              onProgress?.call(currentFile, files.length, progress, speed, 'Sending ${file.name}');
             },
           );
 
-          // Mark as completed
-          await notifier.completeTransfer(file.id);
-          _progressService.completeTracking(file.id);
-
-          // Add to history
-          final historyNotifier = _ref.read(transferHistoryProvider.notifier);
-          await historyNotifier.addHistoryEntry(TransferHistory(
-            id: DateTime.now().millisecondsSinceEpoch.toString(),
+          // Update history as completed
+          final completedTransfer = TransferHistory(
+            id: transferId,
             deviceId: targetDevice.id,
             deviceName: targetDevice.name,
             fileName: file.name,
@@ -134,20 +107,14 @@ class TransferEngineService {
             direction: TransferDirection.send,
             timestamp: DateTime.now(),
             success: true,
-            durationSeconds: DateTime.now().difference(initialStatus.startedAt).inSeconds,
-          ));
+          );
+          _ref.read(transferHistoryProvider.notifier).addTransfer(completedTransfer);
 
           AppLogger.info('File sent successfully: ${file.name}');
-
         } catch (e) {
-          AppLogger.error('Failed to send file: ${file.name}', e);
-          await notifier.failTransfer(file.id, e.toString());
-          _progressService.cancelTracking(file.id);
-          
-          // Add failed history entry
-          final historyNotifier = _ref.read(transferHistoryProvider.notifier);
-          await historyNotifier.addHistoryEntry(TransferHistory(
-            id: DateTime.now().millisecondsSinceEpoch.toString(),
+          // Update history as failed
+          final failedTransfer = TransferHistory(
+            id: transferId,
             deviceId: targetDevice.id,
             deviceName: targetDevice.name,
             fileName: file.name,
@@ -156,17 +123,18 @@ class TransferEngineService {
             timestamp: DateTime.now(),
             success: false,
             error: e.toString(),
-            durationSeconds: DateTime.now().difference(initialStatus.startedAt).inSeconds,
-          ));
-          
+          );
+          _ref.read(transferHistoryProvider.notifier).addTransfer(failedTransfer);
+          AppLogger.error('Failed to send file: ${file.name}', e);
           rethrow;
         }
+
+        currentFile++;
       }
 
-      onProgress?.call(files.length, files.length, 1.0, 0.0, 'All transfers complete!');
-
+      AppLogger.info('All files sent successfully');
     } catch (e) {
-      AppLogger.error('File transfer operation failed', e);
+      AppLogger.error('File transfer failed', e);
       rethrow;
     }
   }
@@ -187,24 +155,8 @@ class TransferEngineService {
     );
   }
 
-  /// Pause a transfer
-  Future<void> pauseTransfer(String fileId) async {
-    final notifier = _ref.read(fileTransferProvider.notifier);
-    await notifier.pauseTransfer(fileId);
-    AppLogger.info('Transfer paused: $fileId');
-  }
-
-  /// Resume a transfer
-  Future<void> resumeTransfer(String fileId) async {
-    final notifier = _ref.read(fileTransferProvider.notifier);
-    await notifier.resumeTransfer(fileId);
-    AppLogger.info('Transfer resumed: $fileId');
-  }
-
   /// Cancel a transfer
   Future<void> cancelTransfer(String fileId) async {
-    final notifier = _ref.read(fileTransferProvider.notifier);
-    await notifier.cancelTransfer(fileId);
     _progressService.cancelTracking(fileId);
     AppLogger.info('Transfer cancelled: $fileId');
   }

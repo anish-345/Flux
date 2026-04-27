@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
 import 'package:flux/models/device.dart';
+import 'package:flux/utils/logger.dart';
 import 'base_service.dart';
 
-/// Service for managing Bluetooth connections
+/// Service for managing Bluetooth connections and data transfer
 class BluetoothService extends BaseService {
   static final BluetoothService _instance = BluetoothService._internal();
 
@@ -15,6 +17,15 @@ class BluetoothService extends BaseService {
 
   final _connectionStateController =
       StreamController<Map<String, dynamic>>.broadcast();
+  
+  // Flux service UUID for identification
+  static const String _fluxServiceUuid = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+  static const String _fluxCharacteristicUuid = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+  
+  // Connected device and characteristic for data transfer
+  fbp.BluetoothDevice? _connectedDevice;
+  fbp.BluetoothCharacteristic? _writeCharacteristic;
+  fbp.BluetoothCharacteristic? _readCharacteristic;
 
   @override
   Future<void> initialize() async {
@@ -233,4 +244,225 @@ class BluetoothService extends BaseService {
   ) {
     return device.connectionState;
   }
+
+  /// Connect to Flux device and discover services
+  Future<bool> connectToFluxDevice(fbp.BluetoothDevice device) async {
+    try {
+      AppLogger.info('Connecting to Flux device: ${device.platformName}');
+      await device.connect();
+      await device.discoverServices();
+      
+      // Find Flux service
+      final services = await device.discoverServices();
+      for (final service in services) {
+        if (service.uuid.toString() == _fluxServiceUuid) {
+          // Find characteristics
+          for (final characteristic in service.characteristics) {
+            if (characteristic.uuid.toString() == _fluxCharacteristicUuid) {
+              _writeCharacteristic = characteristic;
+            }
+          }
+        }
+      }
+      
+      _connectedDevice = device;
+      AppLogger.info('Connected to Flux device successfully');
+      return true;
+    } catch (e) {
+      AppLogger.error('Failed to connect to Flux device', e);
+      return false;
+    }
+  }
+
+  /// Send data via Bluetooth
+  Future<bool> sendData(String data) async {
+    try {
+      if (_writeCharacteristic == null) {
+        AppLogger.error('Write characteristic not available');
+        return false;
+      }
+      
+      final bytes = utf8.encode(data);
+      await _writeCharacteristic!.write(bytes, withoutResponse: false);
+      AppLogger.info('Data sent via Bluetooth: ${data.length} bytes');
+      return true;
+    } catch (e) {
+      AppLogger.error('Failed to send data via Bluetooth', e);
+      return false;
+    }
+  }
+
+  /// Send network info via Bluetooth for same-network detection
+  Future<bool> sendNetworkInfo({
+    required String ipAddress,
+    required int port,
+    required String ssid,
+  }) async {
+    final networkInfo = {
+      'type': 'NETWORK_INFO',
+      'ipAddress': ipAddress,
+      'port': port,
+      'ssid': ssid,
+      'timestamp': DateTime.now().toIso8601String(),
+    };
+    return sendData(jsonEncode(networkInfo));
+  }
+
+  /// Receive network info from connected device
+  Stream<Map<String, dynamic>>? getIncomingDataStream() {
+    if (_readCharacteristic == null) return null;
+
+    return _readCharacteristic!.onValueReceived.map((event) {
+      try {
+        final data = utf8.decode(event);
+        return jsonDecode(data) as Map<String, dynamic>;
+      } catch (e) {
+        AppLogger.error('Failed to parse incoming data', e);
+        return {};
+      }
+    });
+  }
+
+  /// Check if peer device is on the same network by exchanging network info via Bluetooth
+  /// Returns true if both devices are on the same WiFi network, false otherwise
+  Future<bool> checkSameNetworkViaBluetooth({
+    required String mySsid,
+    required String myIpAddress,
+    int myPort = 5000,
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    try {
+      if (_connectedDevice == null || _writeCharacteristic == null) {
+        AppLogger.warning('No Bluetooth connection available for network check');
+        return false;
+      }
+
+      AppLogger.info('Checking same network via Bluetooth...');
+
+      // Send our network info to peer
+      final myNetworkInfo = {
+        'type': 'NETWORK_INFO_REQUEST',
+        'ssid': mySsid,
+        'ipAddress': myIpAddress,
+        'port': myPort,
+        'timestamp': DateTime.now().toIso8601String(),
+      };
+
+      final success = await sendData(jsonEncode(myNetworkInfo));
+      if (!success) {
+        AppLogger.error('Failed to send network info request via Bluetooth');
+        return false;
+      }
+
+      // Wait for peer's response with timeout
+      final completer = Completer<Map<String, dynamic>>();
+      StreamSubscription? subscription;
+
+      subscription = _readCharacteristic?.onValueReceived.listen(
+        (event) {
+          try {
+            final data = utf8.decode(event);
+            final jsonData = jsonDecode(data) as Map<String, dynamic>;
+            if (jsonData['type'] == 'NETWORK_INFO_RESPONSE') {
+              if (!completer.isCompleted) {
+                completer.complete(jsonData);
+              }
+            }
+          } catch (e) {
+            AppLogger.error('Failed to parse network info response', e);
+          }
+        },
+        onError: (e) {
+          if (!completer.isCompleted) {
+            completer.completeError(e);
+          }
+        },
+      );
+
+      try {
+        final response = await completer.future.timeout(timeout);
+        await subscription?.cancel();
+
+        final peerSsid = response['ssid'] as String?;
+        final peerIpAddress = response['ipAddress'] as String?;
+
+        // Check if both devices have valid SSIDs and they match
+        final onSameNetwork = mySsid.isNotEmpty &&
+            peerSsid != null &&
+            peerSsid.isNotEmpty &&
+            mySsid == peerSsid;
+
+        AppLogger.info(
+          'Same network check via Bluetooth: mySSID=$mySsid, peerSSID=$peerSsid, result=$onSameNetwork',
+        );
+
+        return onSameNetwork;
+      } on TimeoutException {
+        await subscription?.cancel();
+        AppLogger.warning('Bluetooth network check timed out');
+        return false;
+      }
+    } catch (e) {
+      AppLogger.error('Failed to check same network via Bluetooth', e);
+      return false;
+    }
+  }
+
+  /// Listen for network info requests and respond with our network info
+  /// Call this when acting as receiver to enable same-network detection
+  Future<void> startNetworkInfoListener({
+    required String mySsid,
+    required String myIpAddress,
+    int myPort = 5000,
+  }) async {
+    try {
+      if (_readCharacteristic == null) {
+        AppLogger.warning('No read characteristic available for network info listener');
+        return;
+      }
+
+      AppLogger.info('Starting network info listener via Bluetooth...');
+
+      _readCharacteristic!.onValueReceived.listen((event) async {
+        try {
+          final data = utf8.decode(event);
+          final jsonData = jsonDecode(data) as Map<String, dynamic>;
+
+          if (jsonData['type'] == 'NETWORK_INFO_REQUEST') {
+            AppLogger.info('Received network info request via Bluetooth');
+
+            // Send our network info as response
+            final response = {
+              'type': 'NETWORK_INFO_RESPONSE',
+              'ssid': mySsid,
+              'ipAddress': myIpAddress,
+              'port': myPort,
+              'timestamp': DateTime.now().toIso8601String(),
+            };
+
+            await sendData(jsonEncode(response));
+            AppLogger.info('Sent network info response via Bluetooth');
+          }
+        } catch (e) {
+          AppLogger.error('Error in network info listener', e);
+        }
+      });
+    } catch (e) {
+      AppLogger.error('Failed to start network info listener', e);
+    }
+  }
+
+  /// Disconnect from current device
+  Future<void> disconnect() async {
+    if (_connectedDevice != null) {
+      await _connectedDevice!.disconnect();
+      _connectedDevice = null;
+      _writeCharacteristic = null;
+      _readCharacteristic = null;
+      AppLogger.info('Disconnected from Bluetooth device');
+    }
+  }
+
+  /// Check if connected to a Flux device
+  bool get isConnected => _connectedDevice != null;
 }

@@ -2,8 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:encrypt/encrypt.dart' as enc;
 import 'package:flux/models/file_metadata.dart';
 import 'package:flux/services/progress_tracking_service.dart';
+import 'package:flux/services/encryption_service.dart';
+import 'package:flux/providers/settings_provider.dart';
 import 'package:flux/utils/logger.dart';
 
 /// Resume marker for tracking partial transfers
@@ -35,18 +39,17 @@ class ResumeMarker {
   );
 }
 
-/// Service for handling actual file transfers over TCP sockets with dynamic ports
-/// Supports resumable transfers and concurrent connections
+/// Service for network file transfers
 class NetworkTransferService {
-  static final NetworkTransferService _instance = NetworkTransferService._internal();
-  factory NetworkTransferService() => _instance;
-  NetworkTransferService._internal();
-
+  final ProgressTrackingService _progressService = ProgressTrackingService();
+  final EncryptionService _encryptionService = EncryptionService();
+  final Ref? _ref;
   ServerSocket? _serverSocket;
   final Map<String, Socket> _activeConnections = {};
   final Map<String, StreamSubscription> _subscriptions = {};
   final Map<String, ResumeMarker> _resumeMarkers = {};
-  final ProgressTrackingService _progressService = ProgressTrackingService();
+
+  NetworkTransferService([this._ref]);
 
   // Port range for dynamic allocation
   static const int _minPort = 10000;
@@ -162,20 +165,23 @@ class NetworkTransferService {
     AppLogger.info('File transfer server stopped');
   }
 
-  /// Handle incoming connection
+  /// Handle incoming connection with mandatory encryption
   void _handleIncomingConnection(Socket socket) {
     final clientAddress = '${socket.remoteAddress.address}:${socket.remotePort}';
-    AppLogger.info('Incoming connection from $clientAddress');
+    AppLogger.info('Incoming encrypted connection from $clientAddress');
 
     _activeConnections[clientAddress] = socket;
 
-    // Listen for file metadata first, then file data
+    // Listen for file metadata first, then session key, then encrypted file data
     final buffer = BytesBuilder();
     bool headerReceived = false;
+    bool sessionKeyReceived = false;
     FileMetadata? currentFile;
     int expectedBytes = 0;
     int receivedBytes = 0;
     IOSink? fileSink;
+    enc.Key? encryptionKey;
+    List<int> encryptedDataBuffer = [];
 
     final subscription = socket.listen(
       (data) async {
@@ -183,39 +189,52 @@ class NetworkTransferService {
           // Try to parse header
           buffer.add(data);
           final bufferBytes = buffer.toBytes();
-          
+
           // Look for header delimiter (\n\n)
           final headerEnd = _findHeaderEnd(bufferBytes);
-          
+
           if (headerEnd != -1) {
             // Parse header
             final headerBytes = bufferBytes.sublist(0, headerEnd);
             final header = utf8.decode(headerBytes);
-            
+
             try {
               final headerJson = jsonDecode(header) as Map<String, dynamic>;
               currentFile = FileMetadata.fromJson(headerJson);
               expectedBytes = currentFile!.size;
-              
-              AppLogger.info('Receiving file: ${currentFile!.name} ($expectedBytes bytes)');
-              
+
+              // Encryption is now mandatory - verify header indicates encryption
+              final isEncrypted = headerJson['encrypted'] as bool? ?? true;
+              if (!isEncrypted) {
+                AppLogger.warning('Received unencrypted transfer request - rejecting for security');
+                socket.add(utf8.encode('ERROR: Encryption required\n'));
+                await socket.close();
+                return;
+              }
+
+              AppLogger.info('Receiving encrypted file: ${currentFile!.name} ($expectedBytes bytes)');
+
               // Start progress tracking
               _progressService.startTracking(currentFile!.id, expectedBytes);
-              
+
               // Create file sink
               final savePath = await _getSavePath(currentFile!.name);
               fileSink = File(savePath).openWrite();
-              
-              // Write any remaining data from buffer
+
+              // Send READY signal
+              socket.add(utf8.encode('READY\n'));
+              await socket.flush();
+
+              // Write any remaining data from buffer (might contain session key)
               final remainingData = bufferBytes.sublist(headerEnd + 2);
               if (remainingData.isNotEmpty) {
-                fileSink!.add(remainingData);
-                receivedBytes += remainingData.length;
-                _progressService.updateProgress(currentFile!.id, receivedBytes);
+                buffer.clear();
+                buffer.add(remainingData);
+              } else {
+                buffer.clear();
               }
-              
+
               headerReceived = true;
-              buffer.clear();
             } catch (e) {
               AppLogger.error('Failed to parse file header', e);
               socket.add(utf8.encode('ERROR: Invalid header\n'));
@@ -223,37 +242,120 @@ class NetworkTransferService {
               return;
             }
           }
+        } else if (!sessionKeyReceived) {
+          // Waiting for session key
+          buffer.add(data);
+          final bufferBytes = buffer.toBytes();
+
+          // Look for session key (format: KEY:base64key\n)
+          final keyPrefix = utf8.encode('KEY:');
+          final newline = utf8.encode('\n');
+
+          if (bufferBytes.length > keyPrefix.length) {
+            // Check if buffer starts with KEY:
+            bool isKey = true;
+            for (int i = 0; i < keyPrefix.length; i++) {
+              if (bufferBytes[i] != keyPrefix[i]) {
+                isKey = false;
+                break;
+              }
+            }
+
+            if (isKey) {
+              // Find newline
+              int newlineIndex = -1;
+              for (int i = keyPrefix.length; i < bufferBytes.length; i++) {
+                if (bufferBytes[i] == newline[0]) {
+                  newlineIndex = i;
+                  break;
+                }
+              }
+
+              if (newlineIndex != -1) {
+                // Extract session key
+                final keyBytes = bufferBytes.sublist(keyPrefix.length, newlineIndex);
+                final keyString = utf8.decode(keyBytes);
+                encryptionKey = enc.Key.fromBase64(keyString);
+                AppLogger.info('Received session key for encrypted transfer');
+
+                // Store remaining data (encrypted file content)
+                final remainingData = bufferBytes.sublist(newlineIndex + 1);
+                if (remainingData.isNotEmpty) {
+                  encryptedDataBuffer.addAll(remainingData);
+                }
+
+                buffer.clear();
+                sessionKeyReceived = true;
+              }
+            }
+          }
         } else {
-          // Receiving file data
-          fileSink?.add(data);
-          receivedBytes += data.length;
-          
-          // Update progress
-          _progressService.updateProgress(currentFile!.id, receivedBytes);
-          
+          // Receiving encrypted file data
+          // Accumulate encrypted data
+          encryptedDataBuffer.addAll(data);
+
+          // Check if we have enough data to decrypt a chunk
+          // Each chunk is: 16 bytes IV + encrypted data (variable)
+          const ivSize = 16;
+
+          while (encryptedDataBuffer.length >= ivSize + 16) { // At least IV + some encrypted data
+            // Extract IV
+            final ivBytes = encryptedDataBuffer.sublist(0, ivSize);
+            final iv = enc.IV(Uint8List.fromList(ivBytes));
+
+            // Try to find a valid chunk boundary
+            // For now, assume we process available data as we receive it
+            final availableEncrypted = encryptedDataBuffer.sublist(ivSize);
+
+            // Decrypt what we have so far
+            try {
+              if (encryptionKey != null) {
+                final encrypter = enc.Encrypter(enc.AES(encryptionKey!, mode: enc.AESMode.gcm));
+                final encrypted = enc.Encrypted(Uint8List.fromList(availableEncrypted));
+                final decrypted = encrypter.decryptBytes(encrypted, iv: iv);
+
+                // Write decrypted data
+                fileSink?.add(decrypted);
+                receivedBytes += decrypted.length;
+
+                // Update progress
+                _progressService.updateProgress(currentFile!.id, receivedBytes);
+
+                // Clear processed data
+                encryptedDataBuffer.clear();
+
+                AppLogger.debug('Decrypted chunk: ${decrypted.length} bytes');
+              }
+            } catch (e) {
+              // Not enough data for a complete chunk yet, wait for more
+              AppLogger.debug('Waiting for more encrypted data...');
+              break;
+            }
+          }
+
           // Check if complete
           if (receivedBytes >= expectedBytes) {
             await fileSink?.close();
             _progressService.completeTracking(currentFile!.id);
-            
+
             // Send acknowledgment
             socket.add(utf8.encode('OK: File received\n'));
             await socket.close();
-            
-            AppLogger.info('File received successfully: ${currentFile!.name}');
+
+            AppLogger.info('Encrypted file received successfully: ${currentFile!.name}');
           }
         }
       },
       onError: (error) {
-        AppLogger.error('Socket error during transfer', error);
+        AppLogger.error('Socket error during encrypted transfer', error);
         _progressService.cancelTracking(currentFile?.id ?? '');
         fileSink?.close();
       },
       onDone: () {
         AppLogger.info('Connection closed from $clientAddress');
         _activeConnections.remove(clientAddress);
-        
-        if (!headerReceived || receivedBytes < expectedBytes) {
+
+        if (!headerReceived || !sessionKeyReceived || receivedBytes < expectedBytes) {
           _progressService.cancelTracking(currentFile?.id ?? '');
           fileSink?.close();
         }
@@ -263,7 +365,8 @@ class NetworkTransferService {
     _subscriptions[clientAddress] = subscription;
   }
 
-  /// Send file to a remote device with resume support
+  /// Send file to a remote device with resume support and mandatory encryption
+  /// All transfers are encrypted using AES-256-GCM for security
   Future<void> sendFile(
     String host,
     int port,
@@ -274,8 +377,12 @@ class NetworkTransferService {
     bool allowResume = true,
   }) async {
     Socket? socket;
-    
+
     try {
+      // Encryption is now mandatory for all transfers
+      const bool shouldEncrypt = true;
+      AppLogger.info('Starting encrypted file transfer: ${file.name}');
+
       // Check for resume marker
       int startByte = 0;
       if (allowResume && deviceId != null) {
@@ -290,11 +397,12 @@ class NetworkTransferService {
       socket = await Socket.connect(host, port, timeout: const Duration(seconds: 10));
       AppLogger.info('Connected to $host:$port for file transfer');
 
-      // Send file metadata header with resume info
+      // Send file metadata header with resume info and encryption flag
       final headerMap = {
         ...file.toJson(),
         'resumeFrom': startByte,
         'allowResume': allowResume,
+        'encrypted': shouldEncrypt,
       };
       final header = jsonEncode(headerMap);
       final headerBytes = utf8.encode(header);
@@ -312,6 +420,16 @@ class NetworkTransferService {
         throw Exception('Receiver not ready: $readyStr');
       }
 
+      // Generate session key for encryption
+      String? sessionKey;
+      if (shouldEncrypt) {
+        sessionKey = _encryptionService.generateSessionKey();
+        // Send session key to receiver
+        final keyData = utf8.encode('KEY:$sessionKey\n');
+        socket.add(keyData);
+        await socket.flush();
+      }
+
       // Read and send file in chunks starting from resume point
       final fileHandle = File(filePath).openSync();
       if (startByte > 0) {
@@ -327,11 +445,17 @@ class NetworkTransferService {
         final remainingBytes = fileLength - sentBytes;
         final chunkSize = remainingBytes < bufferSize ? remainingBytes : bufferSize;
         
-        final chunk = fileHandle.readSync(chunkSize);
+        var chunk = fileHandle.readSync(chunkSize);
         if (chunk.isEmpty) break;
-        
-        socket.add(chunk);
-        sentBytes += chunk.length;
+
+        // Encrypt chunk (encryption is mandatory)
+        final key = enc.Key.fromBase64(sessionKey);
+        final iv = enc.IV.fromSecureRandom(16);
+        final encrypter = enc.Encrypter(enc.AES(key, mode: enc.AESMode.gcm));
+        final encrypted = encrypter.encryptBytes(chunk, iv: iv);
+        final encryptedChunk = iv.bytes + encrypted.bytes;
+        socket.add(encryptedChunk);
+        sentBytes += encryptedChunk.length;
         
         // Save resume marker periodically (every 1MB)
         if (sentBytes % (1024 * 1024) == 0 && deviceId != null) {
@@ -418,7 +542,28 @@ class NetworkTransferService {
 
   /// Get path to save received file
   Future<String> _getSavePath(String fileName) async {
-    // For Windows, use Downloads folder
+    // Try to get custom download directory from settings
+    String? customDir;
+    if (_ref != null) {
+      try {
+        final settings = _ref.read(settingsProvider);
+        customDir = settings.downloadDirectory;
+      } catch (e) {
+        AppLogger.warning('Could not read settings, using default directory');
+      }
+    }
+
+    // If custom directory is set, use it
+    if (customDir != null && customDir.isNotEmpty) {
+      final dir = Directory(customDir);
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
+      final separator = Platform.isWindows ? '\\' : '/';
+      return '$customDir$separator$fileName';
+    }
+
+    // For Windows, use Downloads/FluxShare folder as default
     if (Platform.isWindows) {
       final downloadsPath = '${Platform.environment['USERPROFILE']}\\Downloads\\FluxShare';
       final dir = Directory(downloadsPath);
@@ -428,7 +573,17 @@ class NetworkTransferService {
       return '$downloadsPath\\$fileName';
     }
     
-    // For Android and others, use app documents directory
+    // For Android, use Downloads/FluxShare folder
+    if (Platform.isAndroid) {
+      final downloadsPath = '/storage/emulated/0/Download/FluxShare';
+      final dir = Directory(downloadsPath);
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
+      return '$downloadsPath/$fileName';
+    }
+    
+    // For other platforms, use app documents directory
     final appDir = await Directory.systemTemp.createTemp('flux_share_');
     return '${appDir.path}/$fileName';
   }

@@ -1,5 +1,4 @@
 import 'package:flux/services/base_service.dart';
-import 'package:flux/utils/logger.dart';
 
 /// Service for managing device hotspot (Simulated for Now)
 class HotspotService extends BaseService {
