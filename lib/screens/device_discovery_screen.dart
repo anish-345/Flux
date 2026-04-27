@@ -5,7 +5,8 @@ import 'package:flux/providers/device_provider.dart';
 import 'package:flux/providers/connection_provider.dart';
 import 'package:flux/screens/file_transfer_screen.dart';
 import 'package:flux/widgets/device_card.dart';
-import 'package:flux/widgets/connection_indicator.dart';
+import 'package:flux/widgets/app_card.dart';
+import 'package:flux/config/app_theme.dart';
 import 'package:flux/utils/logger.dart';
 
 class DeviceDiscoveryScreen extends ConsumerStatefulWidget {
@@ -68,14 +69,28 @@ class _DeviceDiscoveryScreenState
     final body = Column(
       children: [
         // ── Connection Status Bar ──
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        AppCard(
+          margin: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+          padding: const EdgeInsets.all(16),
+          elevated: false,
+          backgroundColor: AppTheme.surfaceVariant,
           child: Row(
             children: [
-              ConnectionIndicator(
-                type: ConnectionType.bluetooth,
-                isConnected: connectionState.isBluetoothEnabled,
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: connectionState.isBluetoothEnabled
+                      ? AppTheme.accentColor.withValues(alpha: 0.1)
+                      : AppTheme.textDisabled.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(
+                  Icons.bluetooth_rounded,
+                  size: 20,
+                  color: connectionState.isBluetoothEnabled
+                      ? AppTheme.accentColor
+                      : AppTheme.textTertiary,
+                ),
               ),
               const SizedBox(width: 16),
               Expanded(
@@ -83,29 +98,33 @@ class _DeviceDiscoveryScreenState
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Connected: ${connectedDevices.length}',
-                      style: Theme.of(context).textTheme.bodyMedium,
+                      '${connectedDevices.length} Connected',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
                     ),
                     Text(
-                      'Discovered: ${devices.length}',
-                      style: Theme.of(context).textTheme.bodySmall,
+                      '${devices.length} Discovered nearby',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: AppTheme.textTertiary,
+                          ),
                     ),
                   ],
                 ),
               ),
               if (_isDiscovering) ...[
                 const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: AppTheme.primaryColor,
+                  ),
                 ),
-                const SizedBox(width: 8),
-                Text('Scanning…',
-                    style: Theme.of(context).textTheme.bodySmall),
               ] else
                 TextButton.icon(
                   onPressed: _startDiscovery,
-                  icon: const Icon(Icons.refresh, size: 16),
+                  icon: const Icon(Icons.refresh_rounded, size: 18),
                   label: const Text('Scan'),
                 ),
             ],
@@ -114,18 +133,14 @@ class _DeviceDiscoveryScreenState
 
         // ── Search Bar ──
         Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: TextField(
             decoration: InputDecoration(
-              hintText: 'Search devices…',
-              prefixIcon: const Icon(Icons.search),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+              hintText: 'Search devices...',
+              prefixIcon: const Icon(Icons.search_rounded),
               suffixIcon: _searchQuery.isNotEmpty
                   ? IconButton(
-                      icon: const Icon(Icons.clear),
+                      icon: const Icon(Icons.clear_rounded),
                       onPressed: () => setState(() => _searchQuery = ''),
                     )
                   : null,
@@ -137,34 +152,9 @@ class _DeviceDiscoveryScreenState
         // ── Device List ──
         Expanded(
           child: filteredDevices.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        Icons.devices_other,
-                        size: 72,
-                        color: Theme.of(context).colorScheme.outline,
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        _searchQuery.isEmpty
-                            ? 'No devices discovered'
-                            : 'No devices match your search',
-                        style: Theme.of(context).textTheme.bodyLarge,
-                      ),
-                      const SizedBox(height: 8),
-                      if (_searchQuery.isEmpty)
-                        Text(
-                          'Make sure Bluetooth is enabled and\ntap Scan to discover nearby devices.',
-                          style: Theme.of(context).textTheme.bodySmall,
-                          textAlign: TextAlign.center,
-                        ),
-                    ],
-                  ),
-                )
+              ? _buildEmptyState(context)
               : ListView.builder(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  padding: const EdgeInsets.all(16),
                   itemCount: filteredDevices.length,
                   itemBuilder: (context, index) {
                     final device = filteredDevices[index];
@@ -185,9 +175,9 @@ class _DeviceDiscoveryScreenState
     // When pushed as a standalone route, wrap in Scaffold with AppBar
     if (!isRootInStack && Navigator.of(context).canPop()) {
       return Scaffold(
+        backgroundColor: AppTheme.backgroundColor,
         appBar: AppBar(
           title: const Text('Discover Devices'),
-          elevation: 0,
           actions: [
             IconButton(
               icon: _isDiscovering
@@ -196,7 +186,7 @@ class _DeviceDiscoveryScreenState
                       height: 20,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : const Icon(Icons.refresh),
+                  : const Icon(Icons.refresh_rounded),
               onPressed: _isDiscovering ? null : _startDiscovery,
               tooltip: 'Scan again',
             ),
@@ -208,6 +198,53 @@ class _DeviceDiscoveryScreenState
 
     // Embedded inside HomeScreen's IndexedStack — no extra Scaffold
     return body;
+  }
+
+  Widget _buildEmptyState(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: AppTheme.surfaceVariant,
+              borderRadius: BorderRadius.circular(24),
+            ),
+            child: Icon(
+              Icons.devices_other_outlined,
+              size: 56,
+              color: AppTheme.textTertiary,
+            ),
+          ),
+          const SizedBox(height: 24),
+          Text(
+            _searchQuery.isEmpty
+                ? 'No devices discovered'
+                : 'No devices match your search',
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+          ),
+          const SizedBox(height: 8),
+          if (_searchQuery.isEmpty)
+            Text(
+              'Make sure Bluetooth is enabled and\ntap Scan to discover nearby devices.',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: AppTheme.textTertiary,
+                  ),
+              textAlign: TextAlign.center,
+            ),
+          const SizedBox(height: 24),
+          if (_searchQuery.isEmpty)
+            FilledButton.icon(
+              onPressed: _startDiscovery,
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Scan Now'),
+            ),
+        ],
+      ),
+    );
   }
 
   // ── Handlers ──────────────────────────────────

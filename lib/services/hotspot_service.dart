@@ -56,4 +56,19 @@ class HotspotService extends BaseService {
   Future<bool> isHotspotEnabled() async {
     return _isActive;
   }
+
+  /// Enable hotspot (alias for startHotspot)
+  Future<bool> enableHotspot() async {
+    return startHotspot();
+  }
+
+  /// Get hotspot SSID
+  String? getHotspotSSID() {
+    return _ssid;
+  }
+
+  /// Get hotspot password
+  String? getHotspotPassword() {
+    return _password;
+  }
 }
