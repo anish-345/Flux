@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
 import 'package:flux/models/device.dart';
 import 'package:flux/utils/logger.dart';
@@ -26,6 +27,9 @@ class BluetoothService extends BaseService {
   fbp.BluetoothDevice? _connectedDevice;
   fbp.BluetoothCharacteristic? _writeCharacteristic;
   fbp.BluetoothCharacteristic? _readCharacteristic;
+  
+  // Scan state management to prevent conflicts
+  bool _isScanning = false;
 
   @override
   Future<void> initialize() async {
@@ -70,6 +74,10 @@ class BluetoothService extends BaseService {
 
   /// Check if Bluetooth is available
   Future<bool> isBluetoothAvailable() async {
+    // Bluetooth is only supported on mobile platforms for now
+    if (!(Platform.isAndroid || Platform.isIOS)) {
+      return false;
+    }
     try {
       final isSupported = await fbp.FlutterBluePlus.isSupported;
       logDebug('Bluetooth supported: $isSupported');
@@ -82,6 +90,9 @@ class BluetoothService extends BaseService {
 
   /// Check if Bluetooth is turned on
   Future<bool> isBluetoothOn() async {
+    if (!(Platform.isAndroid || Platform.isIOS)) {
+      return false;
+    }
     try {
       final adapterState = await fbp.FlutterBluePlus.adapterState.first;
       final isOn = adapterState == fbp.BluetoothAdapterState.on;
@@ -98,6 +109,12 @@ class BluetoothService extends BaseService {
     Duration timeout = const Duration(seconds: 10),
   }) async {
     try {
+      // Check if already scanning to prevent conflicts
+      if (_isScanning) {
+        logInfo('Bluetooth scan already in progress, skipping...');
+        return;
+      }
+
       // Check if Bluetooth is enabled first
       final adapterState = await fbp.FlutterBluePlus.adapterState.first;
       if (adapterState != fbp.BluetoothAdapterState.on) {
@@ -105,10 +122,12 @@ class BluetoothService extends BaseService {
         throw Exception('Bluetooth is not enabled');
       }
 
+      _isScanning = true;
       logInfo('Starting Bluetooth scan...');
       await fbp.FlutterBluePlus.startScan(timeout: timeout);
       logInfo('Bluetooth scan started');
     } catch (e) {
+      _isScanning = false;
       logError('Failed to start Bluetooth scan', e);
       rethrow;
     }
@@ -119,8 +138,10 @@ class BluetoothService extends BaseService {
     try {
       logInfo('Stopping Bluetooth scan...');
       await fbp.FlutterBluePlus.stopScan();
+      _isScanning = false;
       logInfo('Bluetooth scan stopped');
     } catch (e) {
+      _isScanning = false;
       logError('Failed to stop Bluetooth scan', e);
       rethrow;
     }
@@ -250,7 +271,6 @@ class BluetoothService extends BaseService {
     try {
       AppLogger.info('Connecting to Flux device: ${device.platformName}');
       await device.connect();
-      await device.discoverServices();
       
       // Find Flux service
       final services = await device.discoverServices();
@@ -259,7 +279,16 @@ class BluetoothService extends BaseService {
           // Find characteristics
           for (final characteristic in service.characteristics) {
             if (characteristic.uuid.toString() == _fluxCharacteristicUuid) {
-              _writeCharacteristic = characteristic;
+              // Check if characteristic is readable or writable
+              final properties = characteristic.properties;
+              if (properties.read) {
+                _readCharacteristic = characteristic;
+                AppLogger.info('Found read characteristic');
+              }
+              if (properties.write || properties.writeWithoutResponse) {
+                _writeCharacteristic = characteristic;
+                AppLogger.info('Found write characteristic');
+              }
             }
           }
         }
@@ -384,8 +413,7 @@ class BluetoothService extends BaseService {
         await subscription?.cancel();
 
         final peerSsid = response['ssid'] as String?;
-        final peerIpAddress = response['ipAddress'] as String?;
-
+      
         // Check if both devices have valid SSIDs and they match
         final onSameNetwork = mySsid.isNotEmpty &&
             peerSsid != null &&

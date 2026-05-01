@@ -2,196 +2,130 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
-import 'package:encrypt/encrypt.dart' as encrypt;
+import 'package:flux/src/rust/api/crypto.dart' as rust_crypto;
 import 'package:flux/utils/logger.dart';
 
 /// Service for encrypting and decrypting file transfers
-/// Uses AES-256-GCM for authenticated encryption
+/// Uses Rust backend for AES-256-GCM with SIMD acceleration
 class EncryptionService {
   static final EncryptionService _instance = EncryptionService._internal();
   factory EncryptionService() => _instance;
   EncryptionService._internal();
 
-  // AES-256 key size
-  static const int _keySize = 32;
-  static const int _ivSize = 16;
+  // AES-256 GCM nonce size — used by encryptText/decryptText
+  static const int _ivSize = 12;
 
-  /// Generate a secure random encryption key
-  String generateKey() {
-    final random = encrypt.SecureRandom(_keySize);
-    return base64Encode(random.bytes);
+  /// Convert bytes to hex string
+  static String _bytesToHex(List<int> bytes) {
+    return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
   }
 
-  /// Derive encryption key from password using PBKDF2-like approach
-  String deriveKeyFromPassword(String password, {String? salt}) {
-    final saltBytes = salt != null 
+  /// Generate a secure random encryption key using Rust
+  Future<String> generateKey() async {
+    final keyBytes = await rust_crypto.generateKey();
+    return base64Encode(keyBytes);
+  }
+
+  /// Generate a secure random nonce using Rust
+  Future<String> generateNonce() async {
+    final nonceBytes = await rust_crypto.generateNonce();
+    return base64Encode(nonceBytes);
+  }
+
+  /// Derive encryption key from password using Rust (SHA-256 based KDF)
+  Future<String> deriveKeyFromPassword(String password, {String? salt}) async {
+    final saltBytes = salt != null
         ? base64Decode(salt)
-        : encrypt.SecureRandom(16).bytes;
-    
-    // Combine password and salt, then hash multiple times
-    var bytes = utf8.encode(password) + saltBytes;
-    for (int i = 0; i < 10000; i++) {
-      bytes = sha256.convert(bytes).bytes;
-    }
-    
-    return base64Encode(bytes);
+        : (await rust_crypto.generateNonce());
+
+    final derivedKey = await rust_crypto.deriveKeyFromPassword(
+      password: password,
+      salt: saltBytes,
+    );
+    return base64Encode(derivedKey);
   }
 
-  /// Encrypt file and return encrypted bytes
-  Future<Uint8List> encryptFile(
-    String filePath,
-    String base64Key, {
-    Function(double progress)? onProgress,
-  }) async {
+  // Chunk size for the hash fallback path only
+  static const int _hashChunkSize = 1024 * 1024; // 1 MB
+
+  /// Encrypt a small piece of data (for metadata) using Rust
+  Future<String> encryptText(String text, String base64Key) async {
     try {
-      final key = encrypt.Key.fromBase64(base64Key);
-      final iv = encrypt.IV.fromSecureRandom(_ivSize);
-      final encrypter = encrypt.Encrypter(
-        encrypt.AES(key, mode: encrypt.AESMode.gcm),
+      final textBytes = utf8.encode(text);
+      final keyBytes = base64Decode(base64Key);
+      final nonceBytes = await rust_crypto.generateNonce();
+
+      // Use Rust for encryption
+      final encryptedBytes = await rust_crypto.encryptAesGcm(
+        plaintext: textBytes,
+        key: keyBytes,
+        nonce: nonceBytes,
       );
 
-      final file = File(filePath);
-      final fileBytes = await file.readAsBytes();
-      
-      // Encrypt in chunks for large files
-      final chunkSize = 64 * 1024; // 64KB chunks
-      final encryptedChunks = <int>[];
-      
-      // Add IV at the beginning
-      encryptedChunks.addAll(iv.bytes);
-      
-      for (int i = 0; i < fileBytes.length; i += chunkSize) {
-        final end = (i + chunkSize < fileBytes.length) ? i + chunkSize : fileBytes.length;
-        final chunk = fileBytes.sublist(i, end);
-        
-        final encrypted = encrypter.encryptBytes(chunk, iv: iv);
-        encryptedChunks.addAll(encrypted.bytes);
-        
-        // Update progress
-        final progress = end / fileBytes.length;
-        onProgress?.call(progress);
-        
-        // Yield to event loop
-        await Future.delayed(Duration.zero);
-      }
-
-      AppLogger.info('File encrypted successfully: $filePath');
-      return Uint8List.fromList(encryptedChunks);
-    } catch (e) {
-      AppLogger.error('Failed to encrypt file', e);
-      rethrow;
-    }
-  }
-
-  /// Decrypt file and save to destination
-  Future<void> decryptFile(
-    Uint8List encryptedData,
-    String destinationPath,
-    String base64Key, {
-    Function(double progress)? onProgress,
-  }) async {
-    try {
-      final key = encrypt.Key.fromBase64(base64Key);
-      
-      // Extract IV from beginning of encrypted data
-      final ivBytes = encryptedData.sublist(0, _ivSize);
-      final iv = encrypt.IV(Uint8List.fromList(ivBytes));
-      
-      final encrypter = encrypt.Encrypter(
-        encrypt.AES(key, mode: encrypt.AESMode.gcm),
-      );
-
-      // Decrypt in chunks
-      final chunkSize = 64 * 1024 + 16; // 64KB + GCM tag
-      final decryptedChunks = <int>[];
-      
-      final encryptedContent = encryptedData.sublist(_ivSize);
-      
-      for (int i = 0; i < encryptedContent.length; i += chunkSize) {
-        final end = (i + chunkSize < encryptedContent.length) 
-            ? i + chunkSize 
-            : encryptedContent.length;
-        final chunk = encryptedContent.sublist(i, end);
-        
-        final encrypted = encrypt.Encrypted(Uint8List.fromList(chunk));
-        final decrypted = encrypter.decryptBytes(encrypted, iv: iv);
-        decryptedChunks.addAll(decrypted);
-        
-        // Update progress
-        final progress = end / encryptedContent.length;
-        onProgress?.call(progress);
-        
-        // Yield to event loop
-        await Future.delayed(Duration.zero);
-      }
-
-      // Write decrypted file
-      final file = File(destinationPath);
-      await file.writeAsBytes(decryptedChunks);
-
-      AppLogger.info('File decrypted successfully: $destinationPath');
-    } catch (e) {
-      AppLogger.error('Failed to decrypt file', e);
-      rethrow;
-    }
-  }
-
-  /// Encrypt a small piece of data (for metadata)
-  String encryptText(String text, String base64Key) {
-    try {
-      final key = encrypt.Key.fromBase64(base64Key);
-      final iv = encrypt.IV.fromSecureRandom(_ivSize);
-      final encrypter = encrypt.Encrypter(
-        encrypt.AES(key, mode: encrypt.AESMode.gcm),
-      );
-
-      final encrypted = encrypter.encrypt(text, iv: iv);
-      
-      // Return IV + encrypted data as base64
-      final combined = iv.bytes + encrypted.bytes;
+      // Return nonce + encrypted data as base64
+      final combined = Uint8List.fromList(nonceBytes + encryptedBytes);
       return base64Encode(combined);
     } catch (e) {
-      AppLogger.error('Failed to encrypt text', e);
+      AppLogger.error('Failed to encrypt text via Rust', e);
       rethrow;
     }
   }
 
-  /// Decrypt text data
-  String decryptText(String encryptedBase64, String base64Key) {
+  /// Decrypt text data using Rust
+  Future<String> decryptText(String encryptedBase64, String base64Key) async {
     try {
-      final key = encrypt.Key.fromBase64(base64Key);
-      
       final combined = base64Decode(encryptedBase64);
-      final ivBytes = combined.sublist(0, _ivSize);
-      final encryptedBytes = combined.sublist(_ivSize);
-      
-      final iv = encrypt.IV(Uint8List.fromList(ivBytes));
-      final encrypter = encrypt.Encrypter(
-        encrypt.AES(key, mode: encrypt.AESMode.gcm),
+      final nonceBytes = combined.sublist(0, _ivSize);
+      final ciphertextBytes = combined.sublist(_ivSize);
+      final keyBytes = base64Decode(base64Key);
+
+      // Use Rust for decryption
+      final decryptedBytes = await rust_crypto.decryptAesGcm(
+        ciphertext: ciphertextBytes,
+        key: keyBytes,
+        nonce: nonceBytes,
       );
 
-      final encrypted = encrypt.Encrypted(Uint8List.fromList(encryptedBytes));
-      return encrypter.decrypt(encrypted, iv: iv);
+      return utf8.decode(decryptedBytes);
     } catch (e) {
-      AppLogger.error('Failed to decrypt text', e);
+      AppLogger.error('Failed to decrypt text via Rust', e);
       rethrow;
     }
   }
 
-  /// Calculate SHA-256 hash of file for integrity verification
+  /// Calculate SHA-256 hash of file using Rust for integrity verification
   Future<String> calculateFileHash(String filePath) async {
     try {
-      final file = File(filePath);
-      final bytes = await file.readAsBytes();
-      final digest = sha256.convert(bytes);
-      return digest.toString();
+      final hashBytes = await rust_crypto.hashFileOptimized(path: filePath);
+      return _bytesToHex(hashBytes);
     } catch (e) {
-      AppLogger.error('Failed to calculate file hash', e);
-      return '';
+      AppLogger.warning(
+        'Rust hashFileOptimized failed for $filePath: $e — using Dart fallback',
+      );
+      // Chunked fallback: never holds more than _hashChunkSize bytes at once.
+      final raf = await File(filePath).open();
+      Digest? result;
+      final sink = sha256.startChunkedConversion(
+        ChunkedConversionSink<Digest>.withCallback((digests) {
+          result = digests.single;
+        }),
+      );
+      final buffer = Uint8List(_hashChunkSize);
+      try {
+        while (true) {
+          final n = await raf.readInto(buffer);
+          if (n == 0) break;
+          sink.add(buffer.sublist(0, n));
+        }
+        sink.close();
+      } finally {
+        await raf.close();
+      }
+      return result!.toString();
     }
   }
 
-  /// Verify file integrity against hash
+  /// Verify file integrity against hash using Rust
   Future<bool> verifyFileIntegrity(String filePath, String expectedHash) async {
     try {
       final actualHash = await calculateFileHash(filePath);
@@ -203,8 +137,7 @@ class EncryptionService {
   }
 
   /// Generate a secure session key for a transfer
-  String generateSessionKey() {
-    final random = encrypt.SecureRandom(_keySize);
-    return base64Encode(random.bytes);
+  Future<String> generateSessionKey() async {
+    return generateKey();
   }
 }

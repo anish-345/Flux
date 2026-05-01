@@ -1,13 +1,30 @@
 ---
-inclusion: when asked to test
+inclusion: manual
 ---
 
-# Firebase Test Lab - Global Learning & Best Practices
+# Firebase Test Lab - Testing Guide
+
+**Quick Navigation:** [Quick Reference](#-quick-reference) | [Common Mistakes](#-common-mistakes--fixes) | [Device Models](#-device-model-ids-reference) | [Commands](#-useful-commands) | [Scenarios](#-test-scenarios) | [Troubleshooting](#-troubleshooting)
 
 **Last Updated:** April 12, 2026  
-**Status:** Active Learning Document  
-**Use Case:** Testing Flutter/Android apps on real devices via cloud  
-**Trigger:** Only use when explicitly asked to test apps
+**Status:** ✅ Active Knowledge Base  
+**Confidence Level:** High (Tested and Verified)  
+**Use Case:** Testing Flutter/Android apps on real devices via cloud
+
+---
+
+## 📋 Document Summary
+
+This guide covers Firebase Test Lab for testing Flutter/Android apps on real cloud devices:
+- **Quick Reference:** Correct command templates and parameters
+- **Common Mistakes:** Frequent errors and how to fix them
+- **Device Models:** Complete reference of available test devices
+- **Useful Commands:** Discovery, build, and test commands
+- **Test Scenarios:** Pre-built scenarios for different testing needs
+- **Troubleshooting:** Solutions for common issues
+- **Best Practices:** Testing strategies and optimization tips
+
+**When to use:** When testing Flutter/Android apps on real devices or setting up CI/CD testing.
 
 ---
 
@@ -371,6 +388,7 @@ firebase use pictopdf
 ---
 
 **Status:** ✅ Active Knowledge Base  
-**Last Used:** April 12, 2026  
-**Confidence Level:** High (tested and verified)  
-**Inclusion:** Only when asked to test apps
+**Last Updated:** April 12, 2026  
+**Confidence Level:** High (Tested and Verified)  
+**Use Case:** Testing Flutter/Android apps on real devices via cloud
+

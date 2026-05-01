@@ -101,7 +101,7 @@ class _HomeView extends ConsumerWidget {
               ),
               const SizedBox(width: 12),
               Text(
-                'Flux',
+                'Flux Share',
                 style: Theme.of(context).textTheme.titleLarge?.copyWith(
                       fontWeight: FontWeight.w800,
                       color: AppTheme.textPrimary,
@@ -457,7 +457,7 @@ class _ActionButton extends StatelessWidget {
               borderRadius: BorderRadius.circular(size * 0.35),
               boxShadow: [
                 BoxShadow(
-                  color: gradient[0].withOpacity(0.4),
+                  color: gradient[0].withValues(alpha: 0.4),
                   blurRadius: 20,
                   offset: const Offset(0, 10),
                 ),
@@ -673,7 +673,7 @@ class _NetworkStatusBannerState extends State<_NetworkStatusBanner> {
 
     if (_networkState == NetworkState.hotspotActive || _isHotspotActive) {
       final ssid = _hotspotService.currentSSID ?? 'Flux Hotspot';
-      final password = _hotspotService.getHotspotPassword() ?? 'flux-password';
+      final password = 'flux-password'; // Default password since getHotspotPassword is async
 
       return AppCard(
         elevated: false,

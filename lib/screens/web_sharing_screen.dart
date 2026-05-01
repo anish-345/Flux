@@ -23,20 +23,30 @@ class _WebSharingScreenState extends ConsumerState<WebSharingScreen> {
   final WebShareService _webShareService = WebShareService();
   final FtpServerService _ftpService = FtpServerService();
   final NetworkManagerService _networkManager = NetworkManagerService();
-  
+
   bool _isStarting = true;
   bool _isRunning = false;
-  String? _serverUrl;
+  String? _serverUrl; // raw IP URL — always works in any browser
+  String? _mdnsUrl; // .local URL — works on iOS/macOS/Windows
   int? _serverPort;
   int? _ftpPort;
   String? _error;
-  
+
+  // Receive settings
+  bool _receiveEnabled = false;
+  String? _receiveFolder;
+  final List<String> _receivedFiles = [];
+
   final List<MapEntry<FileMetadata, String>> _sharedFiles = [];
 
   @override
   void initState() {
     super.initState();
     _initializeNetworkAndStartServer();
+    // Wire up the received-file callback
+    _webShareService.onFileReceived = (path, name) {
+      if (mounted) setState(() => _receivedFiles.insert(0, name));
+    };
   }
 
   @override
@@ -50,30 +60,36 @@ class _WebSharingScreenState extends ConsumerState<WebSharingScreen> {
     try {
       // Check network connection
       final networkResult = await _networkManager.ensureNetworkConnection();
-      
+
       if (!networkResult['success']) {
         setState(() {
-          _error = networkResult['error'] ?? 'No network connection available. Please connect to WiFi or enable hotspot.';
+          _error =
+              networkResult['error'] ??
+              'No network connection available. Please connect to WiFi or enable hotspot.';
           _isStarting = false;
         });
         return;
       }
 
       // Start HTTP server for web UI
-      final httpResult = await _webShareService.startServer(files: _sharedFiles);
-      
+      final httpResult = await _webShareService.startServer(
+        files: _sharedFiles,
+      );
+
       // Start FTP server for file transfers (works across networks)
       final ftpResult = await _ftpService.startServer(files: _sharedFiles);
-      
+
       if (mounted) {
         setState(() {
-          _serverUrl = httpResult['address'] as String?;
+          // flux.local URL from mDNS registration — no IP fallback shown
+          _serverUrl = httpResult['url'] as String?;
+          _mdnsUrl = httpResult['mdnsUrl'] as String?;
           _serverPort = httpResult['port'] as int?;
           _ftpPort = ftpResult['port'] as int?;
           _isRunning = true;
           _isStarting = false;
         });
-        
+
         AppLogger.info('HTTP server: $_serverUrl, FTP server: port $_ftpPort');
       }
     } catch (e) {
@@ -90,11 +106,11 @@ class _WebSharingScreenState extends ConsumerState<WebSharingScreen> {
   Future<void> _pickAndShareFiles() async {
     try {
       final files = await openFiles();
-      
+
       if (files.isEmpty) return;
 
       final newFiles = <MapEntry<FileMetadata, String>>[];
-      
+
       for (final file in files) {
         final bytes = await file.readAsBytes();
         final metadata = FileMetadata(
@@ -122,7 +138,7 @@ class _WebSharingScreenState extends ConsumerState<WebSharingScreen> {
       }
 
       HapticFeedback.mediumImpact();
-      
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -148,9 +164,9 @@ class _WebSharingScreenState extends ConsumerState<WebSharingScreen> {
     setState(() {
       _sharedFiles.removeWhere((f) => f.key.id == fileId);
     });
-    
+
     _webShareService.removeFile(fileId);
-    
+
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('File removed from sharing')),
@@ -168,10 +184,33 @@ class _WebSharingScreenState extends ConsumerState<WebSharingScreen> {
     await _initializeNetworkAndStartServer();
   }
 
+  void _toggleReceive(bool enabled) {
+    setState(() => _receiveEnabled = enabled);
+    _webShareService.setReceiveEnabled(enabled, folder: _receiveFolder);
+  }
+
+  Future<void> _pickReceiveFolder() async {
+    try {
+      final result = await getDirectoryPath(confirmButtonText: 'Select Folder');
+      if (result != null) {
+        setState(() => _receiveFolder = result);
+        _webShareService.setReceiveFolder(result);
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Save folder: $result')));
+        }
+      }
+    } catch (e) {
+      AppLogger.error('Failed to pick folder', e);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final isDesktop = Platform.isWindows || Platform.isLinux || Platform.isMacOS;
-    
+    final isDesktop =
+        Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+
     return Scaffold(
       backgroundColor: AppTheme.backgroundColor,
       appBar: AppBar(
@@ -193,7 +232,7 @@ class _WebSharingScreenState extends ConsumerState<WebSharingScreen> {
             // Header
             _buildHeader(),
             const SizedBox(height: 24),
-            
+
             if (_isStarting) ...[
               _buildLoadingState(),
             ] else if (_error != null) ...[
@@ -202,11 +241,27 @@ class _WebSharingScreenState extends ConsumerState<WebSharingScreen> {
               // QR Code Card
               _buildQRCodeCard(),
               const SizedBox(height: 24),
-              
+
+              // Receive toggle card
+              _buildReceiveCard(),
+              const SizedBox(height: 24),
+
+              // Received files list
+              if (_receivedFiles.isNotEmpty) ...[
+                SectionHeader(
+                  title: 'Received Files (${_receivedFiles.length})',
+                  actionLabel: 'Clear',
+                  onAction: () => setState(() => _receivedFiles.clear()),
+                ),
+                const SizedBox(height: 12),
+                _buildReceivedFilesList(),
+                const SizedBox(height: 24),
+              ],
+
               // Add Files Button
               _buildAddFilesButton(),
               const SizedBox(height: 24),
-              
+
               // Shared Files List
               if (_sharedFiles.isNotEmpty) ...[
                 SectionHeader(
@@ -221,7 +276,7 @@ class _WebSharingScreenState extends ConsumerState<WebSharingScreen> {
                 _buildSharedFilesList(),
                 const SizedBox(height: 24),
               ],
-              
+
               // Instructions
               _buildInstructions(),
             ],
@@ -237,16 +292,16 @@ class _WebSharingScreenState extends ConsumerState<WebSharingScreen> {
       children: [
         Text(
           'Share via Web',
-          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.w700,
-              ),
+          style: Theme.of(
+            context,
+          ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
         ),
         const SizedBox(height: 4),
         Text(
           'Let others download files through their browser',
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: AppTheme.textSecondary,
-              ),
+          style: Theme.of(
+            context,
+          ).textTheme.bodyMedium?.copyWith(color: AppTheme.textSecondary),
         ),
         if (_isRunning) ...[
           const SizedBox(height: 12),
@@ -271,9 +326,9 @@ class _WebSharingScreenState extends ConsumerState<WebSharingScreen> {
                 Text(
                   'HTTP: $_serverPort | FTP: $_ftpPort',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: AppTheme.successColor,
-                        fontWeight: FontWeight.w600,
-                      ),
+                    color: AppTheme.successColor,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ],
             ),
@@ -281,9 +336,9 @@ class _WebSharingScreenState extends ConsumerState<WebSharingScreen> {
           const SizedBox(height: 8),
           Text(
             'Works across any network - even different WiFi/hotspot',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: AppTheme.textTertiary,
-                ),
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: AppTheme.textTertiary),
           ),
         ],
       ],
@@ -295,22 +350,20 @@ class _WebSharingScreenState extends ConsumerState<WebSharingScreen> {
       child: Column(
         children: [
           const SizedBox(height: 40),
-          const CircularProgressIndicator(
-            color: AppTheme.primaryColor,
-          ),
+          const CircularProgressIndicator(color: AppTheme.primaryColor),
           const SizedBox(height: 20),
           Text(
             'Starting web server...',
-            style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                  color: AppTheme.textSecondary,
-                ),
+            style: Theme.of(
+              context,
+            ).textTheme.bodyLarge?.copyWith(color: AppTheme.textSecondary),
           ),
           const SizedBox(height: 8),
           Text(
             'Allocating dynamic port',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: AppTheme.textTertiary,
-                ),
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: AppTheme.textTertiary),
           ),
         ],
       ),
@@ -323,7 +376,9 @@ class _WebSharingScreenState extends ConsumerState<WebSharingScreen> {
       child: FilledButton.icon(
         onPressed: _pickAndShareFiles,
         icon: const Icon(Icons.add_rounded),
-        label: Text(_sharedFiles.isEmpty ? 'Add Files to Share' : 'Add More Files'),
+        label: Text(
+          _sharedFiles.isEmpty ? 'Add Files to Share' : 'Add More Files',
+        ),
         style: FilledButton.styleFrom(
           padding: const EdgeInsets.symmetric(vertical: 14),
         ),
@@ -362,16 +417,16 @@ class _WebSharingScreenState extends ConsumerState<WebSharingScreen> {
                     Text(
                       file.name,
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            fontWeight: FontWeight.w500,
-                          ),
+                        fontWeight: FontWeight.w500,
+                      ),
                       overflow: TextOverflow.ellipsis,
                       maxLines: 1,
                     ),
                     Text(
                       '${(file.size / 1024 / 1024).toStringAsFixed(2)} MB',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: AppTheme.textTertiary,
-                          ),
+                        color: AppTheme.textTertiary,
+                      ),
                     ),
                   ],
                 ),
@@ -411,17 +466,17 @@ class _WebSharingScreenState extends ConsumerState<WebSharingScreen> {
           const SizedBox(height: 24),
           Text(
             'Connection Error',
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 8),
           Text(
             _error!,
             textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: AppTheme.textSecondary,
-                ),
+            style: Theme.of(
+              context,
+            ).textTheme.bodyMedium?.copyWith(color: AppTheme.textSecondary),
           ),
           const SizedBox(height: 24),
           FilledButton.icon(
@@ -440,6 +495,7 @@ class _WebSharingScreenState extends ConsumerState<WebSharingScreen> {
       elevated: true,
       child: Column(
         children: [
+          // QR encodes the raw IP URL — works in ALL browsers including Android Chrome
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -456,28 +512,208 @@ class _WebSharingScreenState extends ConsumerState<WebSharingScreen> {
           ),
           const SizedBox(height: 24),
           Text(
-            'Scan to Connect',
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
+            'Scan to Open in Browser',
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
           ),
-          const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-            decoration: BoxDecoration(
-              color: AppTheme.primaryColor.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Text(
-              _serverUrl!,
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+          const SizedBox(height: 12),
+
+          // Primary: raw IP URL (works everywhere)
+          GestureDetector(
+            onTap: () {
+              Clipboard.setData(ClipboardData(text: _serverUrl!));
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('URL copied to clipboard')),
+              );
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+              decoration: BoxDecoration(
+                color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.wifi_rounded,
+                    size: 16,
                     color: AppTheme.primaryColor,
-                    fontWeight: FontWeight.w600,
                   ),
+                  const SizedBox(width: 8),
+                  Text(
+                    _serverUrl!,
+                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                      color: AppTheme.primaryColor,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Icon(
+                    Icons.copy_rounded,
+                    size: 14,
+                    color: AppTheme.primaryColor,
+                  ),
+                ],
+              ),
             ),
           ),
+
+          // Secondary: .local URL (iOS/macOS/Windows only)
+          if (_mdnsUrl != null) ...[
+            const SizedBox(height: 8),
+            GestureDetector(
+              onTap: () {
+                Clipboard.setData(ClipboardData(text: _mdnsUrl!));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('.local URL copied')),
+                );
+              },
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.language_rounded,
+                    size: 13,
+                    color: AppTheme.textTertiary,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    '$_mdnsUrl  (iOS/macOS/Windows)',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: AppTheme.textTertiary,
+                      decoration: TextDecoration.underline,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
+    );
+  }
+
+  /// Receive toggle — lets browsers upload files back to this device.
+  Widget _buildReceiveCard() {
+    return AppCard(
+      elevated: false,
+      backgroundColor: AppTheme.surfaceVariant,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.upload_file_rounded,
+                color: _receiveEnabled
+                    ? AppTheme.successColor
+                    : AppTheme.textTertiary,
+                size: 22,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Receive Files from Browser',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    Text(
+                      _receiveEnabled
+                          ? 'Browser can upload files to this device'
+                          : 'Toggle to allow browser uploads',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: AppTheme.textTertiary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Switch(
+                value: _receiveEnabled,
+                onChanged: _toggleReceive,
+                activeThumbColor: AppTheme.successColor,
+              ),
+            ],
+          ),
+          if (_receiveEnabled) ...[
+            const SizedBox(height: 12),
+            const Divider(height: 1),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Icon(
+                  Icons.folder_rounded,
+                  size: 18,
+                  color: AppTheme.textTertiary,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _receiveFolder ?? 'Default: Downloads/FluxShare',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: AppTheme.textSecondary,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: _pickReceiveFolder,
+                  icon: const Icon(Icons.edit_rounded, size: 14),
+                  label: const Text('Change'),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// List of files received from the browser.
+  Widget _buildReceivedFilesList() {
+    return Column(
+      children: _receivedFiles.map((name) {
+        return AppCard(
+          margin: const EdgeInsets.only(bottom: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          elevated: false,
+          backgroundColor: AppTheme.successColor.withValues(alpha: 0.06),
+          child: Row(
+            children: [
+              Icon(
+                Icons.check_circle_rounded,
+                color: AppTheme.successColor,
+                size: 18,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  name,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w500),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        );
+      }).toList(),
     );
   }
 
@@ -491,24 +727,25 @@ class _WebSharingScreenState extends ConsumerState<WebSharingScreen> {
         children: [
           Text(
             'How to Use',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 20),
           _buildInfoStep(
             icon: Icons.wifi_rounded,
-            text: 'Ensure both devices are on the same WiFi network or hotspot.',
+            text: 'Connect to the same WiFi network or hotspot.',
           ),
           const SizedBox(height: 16),
           _buildInfoStep(
             icon: Icons.qr_code_scanner_rounded,
-            text: 'Scan the QR code with the other device\'s camera or scanner.',
+            text:
+                'Scan the QR code or type the address shown above in any browser on the same network.',
           ),
           const SizedBox(height: 16),
           _buildInfoStep(
             icon: Icons.file_present_rounded,
-            text: 'Files will appear in the browser for instant download.',
+            text: 'Files appear instantly — tap to download. No app needed.',
           ),
         ],
       ),
@@ -525,20 +762,16 @@ class _WebSharingScreenState extends ConsumerState<WebSharingScreen> {
             color: AppTheme.surfaceColor,
             borderRadius: BorderRadius.circular(10),
           ),
-          child: Icon(
-            icon,
-            color: AppTheme.accentColor,
-            size: 22,
-          ),
+          child: Icon(icon, color: AppTheme.accentColor, size: 22),
         ),
         const SizedBox(width: 16),
         Expanded(
           child: Text(
             text,
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  height: 1.5,
-                  color: AppTheme.textSecondary,
-                ),
+              height: 1.5,
+              color: AppTheme.textSecondary,
+            ),
           ),
         ),
       ],

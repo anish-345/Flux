@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flux/models/file_metadata.dart';
-import 'package:flux/services/network_transfer_service.dart';
 import 'package:flux/utils/logger.dart';
 
 /// Simple FTP server for cross-network file transfers
@@ -16,7 +15,6 @@ class FtpServerService {
   final List<FileMetadata> _sharedFiles = [];
   final Map<String, String> _filePaths = {};
   final Map<String, Socket> _clients = {};
-  final NetworkTransferService _networkService = NetworkTransferService();
 
   int? _serverPort;
   bool _isRunning = false;
@@ -33,13 +31,12 @@ class FtpServerService {
         }
       }
 
-      _serverPort = await _networkService.allocateDynamicPort();
-
+      // Use port 0 to let OS assign an available port
       _serverSocket = await ServerSocket.bind(
         InternetAddress.anyIPv4,
-        _serverPort!,
-        shared: true,
+        0, // Let OS assign port
       );
+      _serverPort = _serverSocket?.port ?? 0;
 
       _isRunning = true;
       AppLogger.info('FTP server started on port $_serverPort');

@@ -3,10 +3,11 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:encrypt/encrypt.dart' as enc;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flux/models/file_metadata.dart';
 import 'package:flux/services/progress_tracking_service.dart';
 import 'package:flux/services/encryption_service.dart';
+import 'package:flux/src/rust/api/crypto.dart' as rust_crypto;
 import 'package:flux/providers/settings_provider.dart';
 import 'package:flux/utils/logger.dart';
 
@@ -46,24 +47,44 @@ class NetworkTransferService {
   final Ref? _ref;
   ServerSocket? _serverSocket;
   final Map<String, Socket> _activeConnections = {};
-  final Map<String, StreamSubscription> _subscriptions = {};
   final Map<String, ResumeMarker> _resumeMarkers = {};
+  
+  // Security limits to prevent memory exhaustion attacks
+  static const int _maxChunkSize = 1024 * 1024; // 1MB max chunk size
+  static const int _maxBufferSize = 10 * 1024 * 1024; // 10MB max buffer size
+  
+  // Connection notification stream (legacy - kept for compatibility)
+  final _connectionController = StreamController<Map<String, dynamic>>.broadcast();
+  Stream<Map<String, dynamic>> get onConnection => _connectionController.stream;
 
   NetworkTransferService([this._ref]);
 
-  // Port range for dynamic allocation
-  static const int _minPort = 10000;
-  static const int _maxPort = 65000;
-
   /// Save resume marker for a transfer
-  void saveResumeMarker(String fileId, int bytesTransferred, String deviceId) {
-    _resumeMarkers[fileId] = ResumeMarker(
+  Future<void> saveResumeMarker(String fileId, int bytesTransferred, String deviceId) async {
+    final marker = ResumeMarker(
       fileId: fileId,
       bytesTransferred: bytesTransferred,
       timestamp: DateTime.now(),
       deviceId: deviceId,
     );
-    AppLogger.info('Resume marker saved: $fileId at $bytesTransferred bytes');
+    
+    // Store in memory for immediate access
+    _resumeMarkers[fileId] = marker;
+    
+    // Persist to shared preferences for app restarts
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final markerData = {
+        'fileId': marker.fileId,
+        'bytesTransferred': marker.bytesTransferred,
+        'timestamp': marker.timestamp.toIso8601String(),
+        'deviceId': marker.deviceId,
+      };
+      await prefs.setString('resume_marker_$fileId', jsonEncode(markerData));
+      AppLogger.info('Resume marker saved and persisted: $fileId at $bytesTransferred bytes');
+    } catch (e) {
+      AppLogger.warning('Failed to persist resume marker: $e');
+    }
   }
 
   /// Get resume marker for a file
@@ -72,297 +93,378 @@ class NetworkTransferService {
   }
 
   /// Clear resume marker
-  void clearResumeMarker(String fileId) {
+  Future<void> clearResumeMarker(String fileId) async {
     _resumeMarkers.remove(fileId);
+    
+    // Remove from persistent storage
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('resume_marker_$fileId');
+      AppLogger.info('Resume marker cleared from memory and storage: $fileId');
+    } catch (e) {
+      AppLogger.warning('Failed to clear persistent resume marker: $e');
+    }
+  }
+
+  /// Load resume markers from persistent storage
+  Future<void> loadResumeMarkers() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final keys = prefs.getKeys().where((key) => key.startsWith('resume_marker_')).toList();
+      
+      for (final key in keys) {
+        final markerJson = prefs.getString(key);
+        if (markerJson != null) {
+          try {
+            final markerData = jsonDecode(markerJson) as Map<String, dynamic>;
+            final marker = ResumeMarker(
+              fileId: markerData['fileId'] as String,
+              bytesTransferred: markerData['bytesTransferred'] as int,
+              timestamp: DateTime.parse(markerData['timestamp'] as String),
+              deviceId: markerData['deviceId'] as String,
+            );
+            
+            // Check if marker is not too old (1 hour)
+            final age = DateTime.now().difference(marker.timestamp);
+            if (age <= const Duration(hours: 1)) {
+              _resumeMarkers[marker.fileId] = marker;
+              AppLogger.info('Loaded resume marker from storage: ${marker.fileId} at ${marker.bytesTransferred} bytes');
+            } else {
+              // Clear expired marker
+              await prefs.remove(key);
+              AppLogger.info('Cleared expired resume marker: ${marker.fileId}');
+            }
+          } catch (e) {
+            AppLogger.warning('Failed to parse resume marker for key $key: $e');
+            await prefs.remove(key); // Remove corrupted marker
+          }
+        }
+      }
+      
+      AppLogger.info('Loaded ${_resumeMarkers.length} resume markers from persistent storage');
+    } catch (e) {
+      AppLogger.error('Failed to load resume markers from storage: $e');
+    }
   }
 
   /// Check if transfer can be resumed
   bool canResume(String fileId, int totalBytes) {
     final marker = _resumeMarkers[fileId];
     if (marker == null) return false;
-    
+
     // Check if marker is not too old (1 hour)
     final age = DateTime.now().difference(marker.timestamp);
     if (age > const Duration(hours: 1)) {
       clearResumeMarker(fileId);
       return false;
     }
-    
+
     return marker.bytesTransferred < totalBytes;
   }
 
-  /// Find and allocate an available dynamic port
-  Future<int> allocateDynamicPort() async {
-    final random = DateTime.now().millisecondsSinceEpoch;
-    int attempts = 0;
-    const maxAttempts = 100;
-
-    while (attempts < maxAttempts) {
-      // Generate pseudo-random port in range
-      final port = _minPort + (random + attempts) % (_maxPort - _minPort);
-      
-      try {
-        // Try to bind to test if port is available
-        final testSocket = await ServerSocket.bind(InternetAddress.anyIPv4, port);
-        await testSocket.close();
-        AppLogger.info('Allocated dynamic port: $port');
-        return port;
-      } catch (e) {
-        attempts++;
-        continue;
-      }
-    }
-
-    throw Exception('Could not find available port after $maxAttempts attempts');
-  }
-
+  
   /// Start listening for incoming file transfers
   Future<int> startServer({int? preferredPort}) async {
     try {
-      // Use preferred port or allocate dynamic one
-      final port = preferredPort ?? await allocateDynamicPort();
-      
-      _serverSocket = await ServerSocket.bind(
-        InternetAddress.anyIPv4,
-        port,
-        shared: true,
-      );
+      // Use preferred port or let OS assign an available port (0 = any available port)
+      final port = preferredPort ?? 0;
+      AppLogger.info('🔌 Binding server socket to port $port (preferred: $preferredPort)');
 
-      AppLogger.info('File transfer server started on port $port');
+      // Try IPv6 first (dual-stack), fallback to IPv4
+      ServerSocket? socket;
+      try {
+        socket = await ServerSocket.bind(
+          InternetAddress.anyIPv6,
+          port,
+          shared: true,
+          v6Only: false, // Allow both IPv4 and IPv6 connections
+        );
+        AppLogger.info('🌐 Bound to IPv6+IPv4 dual-stack on port ${socket.port}');
+      } catch (e) {
+        AppLogger.warning('IPv6 bind failed, falling back to IPv4: $e');
+        socket = await ServerSocket.bind(
+          InternetAddress.anyIPv4,
+          port,
+          shared: true,
+        );
+        AppLogger.info('📡 Bound to IPv4 only on port ${socket.port}');
+      }
+      
+      _serverSocket = socket;
+      final actualPort = socket.port;
+
+      AppLogger.info('🌐 File transfer server successfully bound to port $actualPort');
+      AppLogger.info('👂 Server listening for incoming connections...');
 
       _serverSocket!.listen(
         _handleIncomingConnection,
         onError: (error) {
-          AppLogger.error('Server socket error', error);
+          AppLogger.error('❌ Server socket error', error);
         },
         onDone: () {
-          AppLogger.info('Server socket closed');
+          AppLogger.info('� Server socket closed');
         },
       );
 
-      return port;
+      return actualPort; // Return the actual port the OS assigned
     } catch (e) {
-      AppLogger.error('Failed to start transfer server', e);
+      AppLogger.error('❌ Failed to start transfer server on port $preferredPort', e);
       rethrow;
     }
   }
 
   /// Stop the transfer server
   Future<void> stopServer() async {
-    for (final subscription in _subscriptions.values) {
-      await subscription.cancel();
-    }
-    _subscriptions.clear();
-
     for (final socket in _activeConnections.values) {
-      await socket.close();
+      socket.destroy(); // Force immediate closure to break await for loops
     }
     _activeConnections.clear();
 
     await _serverSocket?.close();
     _serverSocket = null;
-    
+
     AppLogger.info('File transfer server stopped');
   }
 
   /// Handle incoming connection with mandatory encryption
   void _handleIncomingConnection(Socket socket) {
-    final clientAddress = '${socket.remoteAddress.address}:${socket.remotePort}';
+    _processIncomingConnection(socket).catchError((e) {
+      AppLogger.error('Unhandled error in connection', e);
+    });
+  }
+
+  Future<void> _processIncomingConnection(Socket socket) async {
+    final clientAddress =
+        '${socket.remoteAddress.address}:${socket.remotePort}';
     AppLogger.info('Incoming encrypted connection from $clientAddress');
 
     _activeConnections[clientAddress] = socket;
 
-    // Listen for file metadata first, then session key, then encrypted file data
-    final buffer = BytesBuilder();
     bool headerReceived = false;
     bool sessionKeyReceived = false;
     FileMetadata? currentFile;
     int expectedBytes = 0;
     int receivedBytes = 0;
     IOSink? fileSink;
-    enc.Key? encryptionKey;
-    List<int> encryptedDataBuffer = [];
+    Uint8List? encryptionKey;
 
-    final subscription = socket.listen(
-      (data) async {
-        if (!headerReceived) {
-          // Try to parse header
-          buffer.add(data);
-          final bufferBytes = buffer.toBytes();
+    final BytesBuilder incomingBuffer = BytesBuilder();
 
-          // Look for header delimiter (\n\n)
-          final headerEnd = _findHeaderEnd(bufferBytes);
+    try {
+      await for (final data in socket) {
+        incomingBuffer.add(data);
+        
+        final bufferBytes = incomingBuffer.toBytes();
+        int offset = 0;
+        bool processing = true;
+        
+        while (processing) {
+          final remainingLength = bufferBytes.length - offset;
+          
+          if (!headerReceived) {
+            final headerEnd = _findHeaderEnd(bufferBytes.sublist(offset));
+            if (headerEnd != -1) {
+              final headerBytes = bufferBytes.sublist(offset, offset + headerEnd);
+              final header = utf8.decode(headerBytes);
 
-          if (headerEnd != -1) {
-            // Parse header
-            final headerBytes = bufferBytes.sublist(0, headerEnd);
-            final header = utf8.decode(headerBytes);
+              try {
+                final headerJson = jsonDecode(header) as Map<String, dynamic>;
+                
+                if (headerJson['type'] == 'connection_handshake') {
+                  AppLogger.info('🔗 Handshake from ${headerJson['deviceName']}');
+                  final notification = {
+                    'type': 'peer_connected',
+                    'deviceCode': headerJson['deviceCode'],
+                    'deviceName': headerJson['deviceName'],
+                    'clientAddress': clientAddress,
+                    'timestamp': DateTime.now().toIso8601String(),
+                  };
+                  _connectionController.add(notification);
+                  socket.add(utf8.encode('HANDSHAKE_OK\n'));
+                  await socket.flush();
+                  await socket.close();
+                  return;
+                }
 
-            try {
-              final headerJson = jsonDecode(header) as Map<String, dynamic>;
-              currentFile = FileMetadata.fromJson(headerJson);
-              expectedBytes = currentFile!.size;
+                currentFile = FileMetadata.fromJson(headerJson);
+                expectedBytes = currentFile.size;
+                
+                if (!(headerJson['encrypted'] as bool? ?? true)) {
+                  AppLogger.warning('Rejecting unencrypted transfer');
+                  socket.add(utf8.encode('ERROR: Encryption required\n'));
+                  await socket.close();
+                  return;
+                }
 
-              // Encryption is now mandatory - verify header indicates encryption
-              final isEncrypted = headerJson['encrypted'] as bool? ?? true;
-              if (!isEncrypted) {
-                AppLogger.warning('Received unencrypted transfer request - rejecting for security');
-                socket.add(utf8.encode('ERROR: Encryption required\n'));
+                AppLogger.info('Receiving: ${currentFile.name} ($expectedBytes bytes)');
+                _progressService.startTracking(currentFile.id, expectedBytes);
+
+                // Notify UI that a transfer has started
+                _connectionController.add({
+                  'type': 'transfer_started',
+                  'file': currentFile.toJson(),
+                });
+                
+                final savePath = await _getSavePath(currentFile.name);
+                fileSink = File(savePath).openWrite();
+                
+                socket.add(utf8.encode('READY\n'));
+                await socket.flush();
+
+                offset += headerEnd + 2; // Consume header + \n\n
+                headerReceived = true;
+              } catch (e) {
+                AppLogger.error('Header parse error', e);
+                socket.add(utf8.encode('ERROR: Invalid header\n'));
                 await socket.close();
                 return;
               }
-
-              AppLogger.info('Receiving encrypted file: ${currentFile!.name} ($expectedBytes bytes)');
-
-              // Start progress tracking
-              _progressService.startTracking(currentFile!.id, expectedBytes);
-
-              // Create file sink
-              final savePath = await _getSavePath(currentFile!.name);
-              fileSink = File(savePath).openWrite();
-
-              // Send READY signal
-              socket.add(utf8.encode('READY\n'));
-              await socket.flush();
-
-              // Write any remaining data from buffer (might contain session key)
-              final remainingData = bufferBytes.sublist(headerEnd + 2);
-              if (remainingData.isNotEmpty) {
-                buffer.clear();
-                buffer.add(remainingData);
-              } else {
-                buffer.clear();
-              }
-
-              headerReceived = true;
-            } catch (e) {
-              AppLogger.error('Failed to parse file header', e);
-              socket.add(utf8.encode('ERROR: Invalid header\n'));
-              await socket.close();
-              return;
+            } else {
+              processing = false;
             }
-          }
-        } else if (!sessionKeyReceived) {
-          // Waiting for session key
-          buffer.add(data);
-          final bufferBytes = buffer.toBytes();
-
-          // Look for session key (format: KEY:base64key\n)
-          final keyPrefix = utf8.encode('KEY:');
-          final newline = utf8.encode('\n');
-
-          if (bufferBytes.length > keyPrefix.length) {
-            // Check if buffer starts with KEY:
-            bool isKey = true;
-            for (int i = 0; i < keyPrefix.length; i++) {
-              if (bufferBytes[i] != keyPrefix[i]) {
-                isKey = false;
-                break;
-              }
-            }
-
-            if (isKey) {
-              // Find newline
-              int newlineIndex = -1;
-              for (int i = keyPrefix.length; i < bufferBytes.length; i++) {
-                if (bufferBytes[i] == newline[0]) {
-                  newlineIndex = i;
+          } else if (!sessionKeyReceived) {
+            final keyPrefix = utf8.encode('KEY:');
+            final newline = utf8.encode('\n');
+            
+            if (remainingLength > keyPrefix.length) {
+              final searchBuffer = bufferBytes.sublist(offset);
+              int keyStart = -1;
+              for (int i = 0; i <= searchBuffer.length - keyPrefix.length; i++) {
+                bool match = true;
+                for (int j = 0; j < keyPrefix.length; j++) {
+                  if (searchBuffer[i+j] != keyPrefix[j]) {
+                    match = false;
+                    break;
+                  }
+                }
+                if (match) {
+                  keyStart = i;
                   break;
                 }
               }
 
-              if (newlineIndex != -1) {
-                // Extract session key
-                final keyBytes = bufferBytes.sublist(keyPrefix.length, newlineIndex);
-                final keyString = utf8.decode(keyBytes);
-                encryptionKey = enc.Key.fromBase64(keyString);
-                AppLogger.info('Received session key for encrypted transfer');
-
-                // Store remaining data (encrypted file content)
-                final remainingData = bufferBytes.sublist(newlineIndex + 1);
-                if (remainingData.isNotEmpty) {
-                  encryptedDataBuffer.addAll(remainingData);
+              if (keyStart != -1) {
+                int newlineIndex = -1;
+                for (int i = keyStart + keyPrefix.length; i < searchBuffer.length; i++) {
+                  if (searchBuffer[i] == newline[0]) {
+                    newlineIndex = i;
+                    break;
+                  }
                 }
 
-                buffer.clear();
-                sessionKeyReceived = true;
+                if (newlineIndex != -1) {
+                  final keyBytes = searchBuffer.sublist(keyStart + keyPrefix.length, newlineIndex);
+                  encryptionKey = base64Decode(utf8.decode(keyBytes));
+                  sessionKeyReceived = true;
+                  AppLogger.info('Session key received');
+                  
+                  offset += newlineIndex + 1;
+                } else {
+                  processing = false;
+                }
+              } else {
+                processing = false;
               }
+            } else {
+              processing = false;
             }
-          }
-        } else {
-          // Receiving encrypted file data
-          // Accumulate encrypted data
-          encryptedDataBuffer.addAll(data);
-
-          // Check if we have enough data to decrypt a chunk
-          // Each chunk is: 16 bytes IV + encrypted data (variable)
-          const ivSize = 16;
-
-          while (encryptedDataBuffer.length >= ivSize + 16) { // At least IV + some encrypted data
-            // Extract IV
-            final ivBytes = encryptedDataBuffer.sublist(0, ivSize);
-            final iv = enc.IV(Uint8List.fromList(ivBytes));
-
-            // Try to find a valid chunk boundary
-            // For now, assume we process available data as we receive it
-            final availableEncrypted = encryptedDataBuffer.sublist(ivSize);
-
-            // Decrypt what we have so far
-            try {
-              if (encryptionKey != null) {
-                final encrypter = enc.Encrypter(enc.AES(encryptionKey!, mode: enc.AESMode.gcm));
-                final encrypted = enc.Encrypted(Uint8List.fromList(availableEncrypted));
-                final decrypted = encrypter.decryptBytes(encrypted, iv: iv);
-
-                // Write decrypted data
-                fileSink?.add(decrypted);
-                receivedBytes += decrypted.length;
-
-                // Update progress
-                _progressService.updateProgress(currentFile!.id, receivedBytes);
-
-                // Clear processed data
-                encryptedDataBuffer.clear();
-
-                AppLogger.debug('Decrypted chunk: ${decrypted.length} bytes');
-              }
-            } catch (e) {
-              // Not enough data for a complete chunk yet, wait for more
-              AppLogger.debug('Waiting for more encrypted data...');
+          } else {
+            const ivSize = 12;
+            const tagSize = 16;
+            const headerSize = 4;
+            
+            if (remainingLength < headerSize) {
+              processing = false;
               break;
             }
-          }
 
-          // Check if complete
-          if (receivedBytes >= expectedBytes) {
-            await fileSink?.close();
-            _progressService.completeTracking(currentFile!.id);
+            final chunkSize = ByteData.sublistView(Uint8List.fromList(bufferBytes.sublist(offset, offset + headerSize))).getUint32(0, Endian.big);
+            final totalChunkSize = headerSize + ivSize + chunkSize + tagSize;
 
-            // Send acknowledgment
-            socket.add(utf8.encode('OK: File received\n'));
-            await socket.close();
+            if (remainingLength < totalChunkSize) {
+              processing = false;
+              break;
+            }
 
-            AppLogger.info('Encrypted file received successfully: ${currentFile!.name}');
+            // Validate security limits
+            if (chunkSize > _maxChunkSize) {
+               AppLogger.error('Chunk size too large: $chunkSize');
+               await socket.close();
+               return;
+            }
+
+            final ivBytes = bufferBytes.sublist(offset + headerSize, offset + headerSize + ivSize);
+            final encryptedData = bufferBytes.sublist(offset + headerSize + ivSize, offset + headerSize + ivSize + chunkSize);
+            final tagBytes = bufferBytes.sublist(offset + headerSize + ivSize + chunkSize, offset + totalChunkSize);
+
+            try {
+              final encryptedWithTag = Uint8List(encryptedData.length + tagSize);
+              encryptedWithTag.setAll(0, encryptedData);
+              encryptedWithTag.setAll(encryptedData.length, tagBytes);
+
+              final decrypted = await rust_crypto.decryptAesGcm(
+                ciphertext: encryptedWithTag,
+                key: encryptionKey!,
+                nonce: ivBytes,
+              );
+
+              fileSink?.add(decrypted);
+              receivedBytes += decrypted.length;
+              _progressService.updateProgress(currentFile!.id, receivedBytes);
+
+              offset += totalChunkSize;
+              
+              if (receivedBytes >= expectedBytes) {
+                AppLogger.info('Transfer complete: ${currentFile.name}');
+                await fileSink?.close();
+                fileSink = null;
+                _progressService.completeTracking(currentFile.id);
+
+                // Notify UI that transfer is complete
+                _connectionController.add({
+                  'type': 'transfer_completed',
+                  'fileId': currentFile.id,
+                });
+
+                socket.add(utf8.encode('OK: File received\n'));
+                await socket.flush();
+                processing = false;
+              }
+            } catch (e) {
+              AppLogger.error('Decryption failed', e);
+              processing = false;
+            }
           }
         }
-      },
-      onError: (error) {
-        AppLogger.error('Socket error during encrypted transfer', error);
-        _progressService.cancelTracking(currentFile?.id ?? '');
-        fileSink?.close();
-      },
-      onDone: () {
-        AppLogger.info('Connection closed from $clientAddress');
-        _activeConnections.remove(clientAddress);
-
-        if (!headerReceived || !sessionKeyReceived || receivedBytes < expectedBytes) {
-          _progressService.cancelTracking(currentFile?.id ?? '');
-          fileSink?.close();
+        
+        // Cleanup buffer after processing
+        if (offset > 0) {
+          final remaining = bufferBytes.sublist(offset);
+          incomingBuffer.clear();
+          incomingBuffer.add(remaining);
         }
-      },
-    );
+        
+        // Additional security check for buffer size
+        if (incomingBuffer.length > _maxBufferSize) {
+           AppLogger.error('Buffer overflow detected');
+           await socket.close();
+           return;
+        }
+      }
+    } catch (e) {
+      AppLogger.error('Receive file error', e);
+    } finally {
+      AppLogger.info('Connection closed from $clientAddress');
+      _activeConnections.remove(clientAddress);
+      
+      final shouldCancel = !headerReceived || !sessionKeyReceived || receivedBytes < expectedBytes;
+      if (shouldCancel && currentFile != null) {
+        _progressService.cancelTracking(currentFile.id);
+      }
 
-    _subscriptions[clientAddress] = subscription;
+      await fileSink?.close();
+      socket.destroy();
+    }
   }
 
   /// Send file to a remote device with resume support and mandatory encryption
@@ -379,8 +481,7 @@ class NetworkTransferService {
     Socket? socket;
 
     try {
-      // Encryption is now mandatory for all transfers
-      const bool shouldEncrypt = true;
+      // Encryption is mandatory for all transfers
       AppLogger.info('Starting encrypted file transfer: ${file.name}');
 
       // Check for resume marker
@@ -394,7 +495,12 @@ class NetworkTransferService {
       }
 
       // Connect to remote device
-      socket = await Socket.connect(host, port, timeout: const Duration(seconds: 10));
+      socket = await Socket.connect(
+        host,
+        port,
+        timeout: const Duration(seconds: 10),
+      );
+      final socketIterator = StreamIterator(socket);
       AppLogger.info('Connected to $host:$port for file transfer');
 
       // Send file metadata header with resume info and encryption flag
@@ -402,99 +508,123 @@ class NetworkTransferService {
         ...file.toJson(),
         'resumeFrom': startByte,
         'allowResume': allowResume,
-        'encrypted': shouldEncrypt,
+        'encrypted': true,
       };
       final header = jsonEncode(headerMap);
       final headerBytes = utf8.encode(header);
       final delimiter = utf8.encode('\n\n');
-      
+
       socket.add(headerBytes);
       socket.add(delimiter);
       await socket.flush();
 
       // Wait for ready signal from receiver
-      final readyResponse = await socket.timeout(const Duration(seconds: 10)).first;
-      final readyStr = utf8.decode(readyResponse);
-      
-      if (!readyStr.startsWith('READY')) {
+      if (!await socketIterator.moveNext().timeout(const Duration(seconds: 10))) {
+        throw Exception('Timeout waiting for READY');
+      }
+      final readyStr = utf8.decode(socketIterator.current);
+
+      if (!readyStr.contains('READY')) {
         throw Exception('Receiver not ready: $readyStr');
       }
 
-      // Generate session key for encryption
-      String? sessionKey;
-      if (shouldEncrypt) {
-        sessionKey = _encryptionService.generateSessionKey();
-        // Send session key to receiver
-        final keyData = utf8.encode('KEY:$sessionKey\n');
-        socket.add(keyData);
-        await socket.flush();
-      }
-
-      // Read and send file in chunks starting from resume point
-      final fileHandle = File(filePath).openSync();
-      if (startByte > 0) {
-        fileHandle.setPositionSync(startByte);
-      }
-      
-      final fileLength = await File(filePath).length();
-      int sentBytes = startByte;
-      final stopwatch = Stopwatch()..start();
-      final bufferSize = 256 * 1024; // 256KB chunks for faster transfer
-
-      while (sentBytes < fileLength) {
-        final remainingBytes = fileLength - sentBytes;
-        final chunkSize = remainingBytes < bufferSize ? remainingBytes : bufferSize;
-        
-        var chunk = fileHandle.readSync(chunkSize);
-        if (chunk.isEmpty) break;
-
-        // Encrypt chunk (encryption is mandatory)
-        final key = enc.Key.fromBase64(sessionKey);
-        final iv = enc.IV.fromSecureRandom(16);
-        final encrypter = enc.Encrypter(enc.AES(key, mode: enc.AESMode.gcm));
-        final encrypted = encrypter.encryptBytes(chunk, iv: iv);
-        final encryptedChunk = iv.bytes + encrypted.bytes;
-        socket.add(encryptedChunk);
-        sentBytes += encryptedChunk.length;
-        
-        // Save resume marker periodically (every 1MB)
-        if (sentBytes % (1024 * 1024) == 0 && deviceId != null) {
-          saveResumeMarker(file.id, sentBytes, deviceId);
-        }
-        
-        // Calculate progress and speed
-        final progress = sentBytes / fileLength;
-        final elapsedSeconds = stopwatch.elapsedMilliseconds / 1000;
-        final speed = elapsedSeconds > 0 ? (sentBytes - startByte) / elapsedSeconds : 0.0;
-        
-        onProgress?.call(progress, speed);
-        
-        // Flush to send data immediately
-        await socket.flush();
-      }
-
-      fileHandle.closeSync();
+      // Generate session key for encryption — always required
+      final sessionKey = await _encryptionService.generateSessionKey();
+      final keyData = utf8.encode('KEY:$sessionKey\n');
+      socket.add(keyData);
       await socket.flush();
-      
+
+      final fileLength = await File(filePath).length();
+      int sentFileBytes = startByte;
+      final stopwatch = Stopwatch()..start();
+      const bufferSize = 256 * 1024; // 256 KB chunks
+
+      // Fix 2: decode key ONCE before the loop — not 4000× for a 1 GB file
+      final keyBytes = base64Decode(sessionKey);
+
+      // Fix 1: openRead() is a true async stream — never blocks the UI thread
+      final fileStream = File(filePath).openRead(startByte);
+
+      await for (final rawChunk in fileStream) {
+        // Stream may yield chunks larger than bufferSize — slice them
+        int offset = 0;
+        while (offset < rawChunk.length) {
+          final end = (offset + bufferSize).clamp(0, rawChunk.length);
+          final chunk = Uint8List.fromList(rawChunk.sublist(offset, end));
+          offset = end;
+
+          // Rust AES-256-GCM encrypt — SIMD accelerated
+          final nonce = await rust_crypto.generateNonce(); // 12-byte GCM nonce
+          final encryptedWithTag = await rust_crypto.encryptAesGcm(
+            plaintext: chunk,
+            key: keyBytes,
+            nonce: nonce,
+          );
+          // Rust returns [ciphertext | 16-byte GCM tag]
+          final encryptedData = encryptedWithTag.sublist(
+            0,
+            encryptedWithTag.length - 16,
+          );
+          final tagBytes = encryptedWithTag.sublist(
+            encryptedWithTag.length - 16,
+          );
+
+          // Wire protocol: [4 B plaintext-size BE][12 B nonce][ciphertext][16 B tag]
+          final sizeBytes = ByteData(4)..setUint32(0, chunk.length, Endian.big);
+
+          // Fix 3: batch all adds, NO flush inside loop
+          // Let the OS TCP stack manage Nagle / window scaling natively
+          socket.add(sizeBytes.buffer.asUint8List());
+          socket.add(nonce);
+          socket.add(encryptedData);
+          socket.add(tagBytes);
+
+          sentFileBytes += chunk.length;
+
+          // Periodic flush for backpressure (every 2 MB)
+          if (sentFileBytes % (2 * 1024 * 1024) == 0) {
+            await socket.flush();
+          }
+
+          // Save resume marker every 1 MB
+          if (sentFileBytes % (1024 * 1024) == 0 && deviceId != null) {
+            saveResumeMarker(file.id, sentFileBytes, deviceId);
+          }
+
+          final progress = sentFileBytes / fileLength;
+          final elapsedSeconds = stopwatch.elapsedMilliseconds / 1000;
+          final speed = elapsedSeconds > 0
+              ? (sentFileBytes - startByte) / elapsedSeconds
+              : 0.0;
+          onProgress?.call(progress, speed);
+        }
+      }
+
+      // Single flush after all chunks — lets TCP batch everything efficiently
+      await socket.flush();
+
       // Wait for final acknowledgment
-      final response = await socket.timeout(const Duration(seconds: 30)).first;
-      final responseStr = utf8.decode(response);
-      
-      if (responseStr.startsWith('OK')) {
+      if (!await socketIterator.moveNext().timeout(const Duration(seconds: 30))) {
+        throw Exception('Timeout waiting for OK');
+      }
+      final responseStr = utf8.decode(socketIterator.current);
+
+      if (responseStr.contains('OK')) {
         // Transfer complete - clear resume marker
         clearResumeMarker(file.id);
         AppLogger.info('File sent successfully: ${file.name}');
       } else {
         // Save resume marker for future retry
         if (deviceId != null) {
-          saveResumeMarker(file.id, sentBytes, deviceId);
+          saveResumeMarker(file.id, sentFileBytes, deviceId);
         }
         throw Exception('Transfer failed: $responseStr');
       }
     } catch (e) {
       // Save resume marker on failure for retry
       if (deviceId != null) {
-        final currentBytes = _progressService.getProgress(file.id)?.transferredBytes ?? 0;
+        final currentBytes =
+            _progressService.getProgress(file.id)?.transferredBytes ?? 0;
         if (currentBytes > 0) {
           saveResumeMarker(file.id, currentBytes, deviceId);
         }
@@ -511,7 +641,13 @@ class NetworkTransferService {
     String host,
     int port,
     List<MapEntry<FileMetadata, String>> files, {
-    Function(int currentFile, int totalFiles, double fileProgress, double totalProgress)? onProgress,
+    Function(
+      int currentFile,
+      int totalFiles,
+      double fileProgress,
+      double totalProgress,
+    )?
+    onProgress,
   }) async {
     final totalBytes = files.fold<int>(0, (sum, f) => sum + f.key.size);
     int totalSentBytes = 0;
@@ -519,19 +655,40 @@ class NetworkTransferService {
     for (int i = 0; i < files.length; i++) {
       final file = files[i].key;
       final path = files[i].value;
-      
-      await sendFile(host, port, file, path, onProgress: (progress, speed) {
-        final fileSentBytes = (progress * file.size).toInt();
-        totalSentBytes += fileSentBytes;
-        final totalProgress = totalSentBytes / totalBytes;
-        
-        onProgress?.call(i + 1, files.length, progress, totalProgress);
-      });
+
+      final bytesSentBeforeThisFile = totalSentBytes;
+
+      await sendFile(
+        host,
+        port,
+        file,
+        path,
+        onProgress: (progress, speed) {
+          final fileSentBytes = (progress * file.size).toInt();
+          final currentTotalSentBytes = bytesSentBeforeThisFile + fileSentBytes;
+          final totalProgress = totalBytes > 0
+              ? currentTotalSentBytes / totalBytes
+              : 0.0;
+
+          onProgress?.call(i + 1, files.length, progress, totalProgress);
+        },
+      );
+
+      totalSentBytes += file.size;
     }
   }
 
   /// Find the end of header in byte array
+  /// Returns position of delimiter (handles both single newline for handshake and double newline for file headers)
   int _findHeaderEnd(Uint8List data) {
+    // First check for single newline (handshake messages)
+    for (int i = 0; i < data.length; i++) {
+      if (data[i] == 10) { // LF (newline)
+        return i;
+      }
+    }
+    
+    // Then check for double newline (file transfer headers)
     for (int i = 0; i < data.length - 1; i++) {
       if (data[i] == 10 && data[i + 1] == 10) {
         return i;
@@ -565,14 +722,15 @@ class NetworkTransferService {
 
     // For Windows, use Downloads/FluxShare folder as default
     if (Platform.isWindows) {
-      final downloadsPath = '${Platform.environment['USERPROFILE']}\\Downloads\\FluxShare';
+      final downloadsPath =
+          '${Platform.environment['USERPROFILE']}\\Downloads\\FluxShare';
       final dir = Directory(downloadsPath);
       if (!await dir.exists()) {
         await dir.create(recursive: true);
       }
       return '$downloadsPath\\$fileName';
     }
-    
+
     // For Android, use Downloads/FluxShare folder
     if (Platform.isAndroid) {
       final downloadsPath = '/storage/emulated/0/Download/FluxShare';
@@ -582,7 +740,7 @@ class NetworkTransferService {
       }
       return '$downloadsPath/$fileName';
     }
-    
+
     // For other platforms, use app documents directory
     final appDir = await Directory.systemTemp.createTemp('flux_share_');
     return '${appDir.path}/$fileName';
@@ -618,7 +776,7 @@ extension FileMetadataJson on FileMetadata {
     mimeType: json['mimeType'] as String,
     hash: json['hash'] as String,
     path: json['path'] as String?,
-    createdAt: json['createdAt'] != null 
+    createdAt: json['createdAt'] != null
         ? DateTime.parse(json['createdAt'] as String)
         : DateTime.now(),
     modifiedAt: json['modifiedAt'] != null

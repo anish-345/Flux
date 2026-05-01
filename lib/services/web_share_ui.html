@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flux Share - Download Files</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, 'Helvetica Neue', sans-serif;
+            background: #ffffff;
+            min-height: 100vh;
+            padding: 16px;
+            color: #0f172a;
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        
+        /* Header Section */
+        .header {
+            text-align: center;
+            padding: 40px 20px 32px;
+            margin-bottom: 24px;
+        }
+        
+        .logo {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 64px;
+            height: 64px;
+            background: linear-gradient(135deg, #4F46E5 0%, #0EA5E9 100%);
+            border-radius: 16px;
+            margin-bottom: 24px;
+            box-shadow: 0 10px 25px -5px rgba(79, 70, 229, 0.3);
+        }
+        
+        .logo-icon {
+            font-size: 32px;
+            filter: brightness(0) invert(1);
+        }
+        
+        .header h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+            color: #0f172a;
+            letter-spacing: -0.02em;
+        }
+        
+        .header p {
+            font-size: 1rem;
+            color: #64748b;
+            margin-bottom: 20px;
+            font-weight: 500;
+        }
+        
+        .connection-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: #f1f5f9;
+            padding: 10px 16px;
+            border-radius: 24px;
+            font-size: 0.875rem;
+            color: #475569;
+            font-weight: 600;
+            border: 1px solid #e2e8f0;
+        }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background: #22c55e;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        
+        /* Card Container */
+        .card {
+            background: #ffffff;
+            border-radius: 24px;
+            padding: 32px;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02), 0 10px 15px -3px rgba(0,0,0,0.05);
+            border: 1px solid #f1f5f9;
+            margin-bottom: 24px;
+        }
+        
+        /* Action Buttons */
+        .action-bar {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+        }
+        
+        .download-all-btn {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 10px;
+            font-weight: 600;
+            font-size: 0.95rem;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 12px rgba(16, 185, 129, 0.25);
+            flex: 1;
+            min-width: 160px;
+        }
+        
+        .download-all-btn:hover {
+            background: linear-gradient(135deg, #059669 0%, #047857 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(16, 185, 129, 0.35);
+        }
+        
+        .download-all-btn:active {
+            transform: translateY(0);
+        }
+        
+        .download-all-btn.downloading {
+            background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+            pointer-events: none;
+        }
+        
+        /* File List */
+        .file-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        .file-item {
+            background: #ffffff;
+            border-radius: 14px;
+            padding: 16px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            border: 1px solid #e2e8f0;
+            transition: all 0.2s ease;
+            position: relative;
+        }
+        
+        .file-item:hover {
+            border-color: #4F46E5;
+            box-shadow: 0 4px 12px rgba(79, 70, 229, 0.12);
+            background: #f8fafc;
+        }
+        
+        /* File Icon */
+        .file-icon {
+            width: 48px;
+            height: 48px;
+            background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 24px;
+            flex-shrink: 0;
+            box-shadow: 0 4px 12px rgba(79, 70, 229, 0.25);
+        }
+        
+        /* File Info */
+        .file-info {
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        
+        .file-name {
+            font-weight: 600;
+            font-size: 0.95rem;
+            color: #1f2937;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            line-height: 1.4;
+        }
+        
+        .file-meta {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 0.85rem;
+            color: #64748b;
+            font-weight: 500;
+        }
+        
+        .file-size {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        
+        .download-count {
+            background: #f1f5f9;
+            color: #64748b;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 0.8rem;
+        }
+        
+        /* Progress Bar */
+        .progress-bar {
+            width: 100%;
+            height: 3px;
+            background: #e2e8f0;
+            border-radius: 2px;
+            margin-top: 8px;
+            overflow: hidden;
+            display: none;
+        }
+        
+        .progress-bar.active {
+            display: block;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4F46E5 0%, #0EA5E9 100%);
+            border-radius: 2px;
+            transition: width 0.2s ease;
+        }
+        
+        /* Download Button */
+        .download-btn {
+            background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 0.9rem;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            transition: all 0.2s ease;
+            flex-shrink: 0;
+            box-shadow: 0 4px 12px rgba(79, 70, 229, 0.25);
+            white-space: nowrap;
+        }
+        
+        .download-btn:hover {
+            background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(79, 70, 229, 0.35);
+        }
+        
+        .download-btn:active {
+            transform: translateY(0);
+        }
+        
+        .download-btn.downloading {
+            background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+            pointer-events: none;
+        }
+        
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #64748b;
+        }
+        
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+            opacity: 0.6;
+        }
+        
+        .empty-state p {
+            font-size: 1rem;
+            font-weight: 500;
+        }
+        
+        /* Footer */
+        .footer {
+            text-align: center;
+            padding: 24px;
+            color: #94a3b8;
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+        
+        .footer a {
+            color: #4F46E5;
+            text-decoration: none;
+            font-weight: 600;
+        }
+        
+        /* Animations */
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        /* Mobile Responsive */
+        @media (max-width: 640px) {
+            body { 
+                padding: 12px; 
+            }
+            
+            .header { 
+                padding: 24px 16px 20px; 
+                margin-bottom: 16px;
+            }
+            
+            .header h1 { 
+                font-size: 1.5rem; 
+            }
+            
+            .card { 
+                padding: 16px; 
+                border-radius: 16px; 
+            }
+            
+            .action-bar {
+                flex-direction: column;
+                gap: 10px;
+            }
+            
+            .download-all-btn {
+                flex: 1;
+                min-width: unset;
+            }
+            
+            .file-item { 
+                flex-wrap: wrap;
+                gap: 12px;
+                padding: 12px;
+            }
+            
+            .file-icon { 
+                width: 40px;
+                height: 40px;
+                font-size: 20px;
+            }
+            
+            .file-info {
+                width: 100%;
+                order: 2;
+            }
+            
+            .download-btn { 
+                width: 100%;
+                justify-content: center;
+                order: 3;
+                padding: 10px 16px;
+            }
+            
+            .file-meta {
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+            
+            .empty-state {
+                padding: 40px 16px;
+            }
+            
+            .empty-state-icon {
+                font-size: 40px;
+            }
+        }
+        
+        /* Tablet & Desktop */
+        @media (min-width: 768px) {
+            .file-item {
+                padding: 18px;
+            }
+            
+            .file-icon {
+                width: 52px;
+                height: 52px;
+                font-size: 26px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo">
+                <span class="logo-icon">📤</span>
+            </div>
+            <h1>Flux Share</h1>
+            <p>Download shared files directly to your device</p>
+            <div class="connection-badge">
+                <span class="status-dot"></span>
+                <span id="fileCount">0 file(s) available</span>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div id="fileContainer"></div>
+        </div>
+        
+        <div class="footer">
+            <p>Powered by <a href="#">Flux</a> • Secure local file sharing</p>
+        </div>
+    </div>
+
+    <script>
+        let files = [];
+        let downloadProgress = {};
+
+        // File type to icon mapping with color gradients
+        const fileTypeIcons = {
+            'jpg': { icon: '🖼️', color: '#FF6B6B' },
+            'jpeg': { icon: '🖼️', color: '#FF6B6B' },
+            'png': { icon: '🖼️', color: '#FF6B6B' },
+            'gif': { icon: '🖼️', color: '#FF6B6B' },
+            'webp': { icon: '🖼️', color: '#FF6B6B' },
+            'mp4': { icon: '🎬', color: '#4ECDC4' },
+            'mov': { icon: '🎬', color: '#4ECDC4' },
+            'avi': { icon: '🎬', color: '#4ECDC4' },
+            'mkv': { icon: '🎬', color: '#4ECDC4' },
+            'mp3': { icon: '🎵', color: '#FFD93D' },
+            'wav': { icon: '🎵', color: '#FFD93D' },
+            'flac': { icon: '🎵', color: '#FFD93D' },
+            'aac': { icon: '🎵', color: '#FFD93D' },
+            'pdf': { icon: '📄', color: '#EF5350' },
+            'doc': { icon: '📝', color: '#42A5F5' },
+            'docx': { icon: '📝', color: '#42A5F5' },
+            'txt': { icon: '📝', color: '#42A5F5' },
+            'zip': { icon: '📦', color: '#AB47BC' },
+            'rar': { icon: '📦', color: '#AB47BC' },
+            '7z': { icon: '📦', color: '#AB47BC' },
+            'apk': { icon: '📱', color: '#66BB6A' },
+            'exe': { icon: '💻', color: '#29B6F6' }
+        };
+
+        async function loadFiles() {
+            try {
+                const response = await fetch('/api/files');
+                files = await response.json();
+                renderFiles();
+            } catch (error) {
+                console.error('Failed to load files:', error);
+                document.getElementById('fileContainer').innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">⚠️</div>
+                        <p>Failed to load files. Please refresh the page.</p>
+                    </div>
+                `;
+            }
+        }
+
+        function formatSize(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        }
+
+        function getFileIcon(name) {
+            const ext = name.split('.').pop().toLowerCase();
+            return fileTypeIcons[ext] || { icon: '📄', color: '#64748B' };
+        }
+
+        function renderFiles() {
+            const container = document.getElementById('fileContainer');
+            const fileCount = document.getElementById('fileCount');
+            
+            if (files.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📂</div>
+                        <p>No files available for download</p>
+                    </div>
+                `;
+                fileCount.textContent = '0 file(s) available';
+                return;
+            }
+
+            fileCount.textContent = files.length + ' file(s) available';
+
+            const actionBar = `
+                <div class="action-bar">
+                    <button class="download-all-btn" id="downloadAllBtn" onclick="downloadAll()">
+                        ⬇️ Download All
+                    </button>
+                </div>
+            `;
+
+            const fileList = `
+                <div class="file-list">
+                    ${files.map(file => {
+                        const fileIcon = getFileIcon(file.name);
+                        const isDownloading = downloadProgress[file.id] ? true : false;
+                        return `
+                            <div class="file-item" id="file-${file.id}">
+                                <div class="file-icon">${fileIcon.icon}</div>
+                                <div class="file-info">
+                                    <div class="file-name" title="${file.name}">${file.name}</div>
+                                    <div class="file-meta">
+                                        <span class="file-size">${formatSize(file.size)}</span>
+                                        ${file.downloadCount > 0 ? `<span class="download-count">${file.downloadCount} download${file.downloadCount !== 1 ? 's' : ''}</span>` : ''}
+                                    </div>
+                                    <div class="progress-bar ${isDownloading ? 'active' : ''}" id="progress-${file.id}">
+                                        <div class="progress-fill" style="width: ${(downloadProgress[file.id] || 0) * 100}%"></div>
+                                    </div>
+                                </div>
+                                <a href="/download/${file.id}" 
+                                   class="download-btn ${isDownloading ? 'downloading' : ''}"
+                                   id="btn-${file.id}"
+                                   onclick="startDownload('${file.id}', event)">
+                                    ${isDownloading ? '⏳' : '⬇️'}
+                                </a>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+
+            container.innerHTML = actionBar + fileList;
+        }
+
+        async function downloadAll() {
+            const downloadAllBtn = document.getElementById('downloadAllBtn');
+            if (downloadAllBtn) {
+                downloadAllBtn.classList.add('downloading');
+                downloadAllBtn.textContent = '⏳ Downloading...';
+            }
+
+            window.location.href = '/download/all';
+
+            let progress = 0;
+            const progressInterval = setInterval(() => {
+                progress += 0.05;
+                if (progress >= 1) {
+                    progress = 1;
+                    clearInterval(progressInterval);
+                    
+                    if (downloadAllBtn) {
+                        downloadAllBtn.classList.remove('downloading');
+                        downloadAllBtn.textContent = '⬇️ Download All';
+                    }
+                    
+                    setTimeout(() => loadFiles(), 2000);
+                }
+            }, 100);
+        }
+
+        async function startDownload(fileId, event) {
+            event.preventDefault();
+            
+            if (downloadProgress[fileId]) return;
+            
+            downloadProgress[fileId] = 0;
+            updateDownloadUI(fileId);
+            
+            try {
+                const file = files.find(f => f.id === fileId);
+                const a = document.createElement('a');
+                a.href = '/download/' + fileId;
+                a.download = file ? file.name : 'download';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                
+                setTimeout(() => {
+                    delete downloadProgress[fileId];
+                    updateDownloadUI(fileId);
+                    loadFiles();
+                }, 3000);
+                
+            } catch (error) {
+                console.error('Download failed:', error);
+                alert('Failed to initiate download.');
+                delete downloadProgress[fileId];
+                updateDownloadUI(fileId);
+            }
+        }
+
+        function updateDownloadUI(fileId) {
+            const btn = document.querySelector('#file-' + fileId + ' .download-btn');
+            const progressBar = document.getElementById('progress-' + fileId);
+            const progressFill = progressBar?.querySelector('.progress-fill');
+            
+            if (btn) {
+                if (downloadProgress[fileId]) {
+                    btn.classList.add('downloading');
+                    btn.textContent = '⏳';
+                    progressBar?.classList.add('active');
+                    if (progressFill) {
+                        progressFill.style.width = (downloadProgress[fileId] * 100) + '%';
+                    }
+                } else {
+                    btn.classList.remove('downloading');
+                    btn.textContent = '⬇️';
+                    progressBar?.classList.remove('active');
+                }
+            }
+        }
+
+        // Load files on page load and refresh every 5 seconds
+        loadFiles();
+        setInterval(loadFiles, 5000);
+    </script>
+</body>
+</html>

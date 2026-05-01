@@ -14,6 +14,20 @@
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- mDNS multicast — required for flux.local hostname resolution -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    
+    <!-- Permissions for new features -->
+    <!-- File browser & transfer -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    
+    <!-- Battery monitoring -->
+    <uses-permission android:name="android.permission.BATTERY_STATS" />
+    
+    <!-- Device info -->
+    <uses-permission android:name="android.permission.GET_PACKAGE_SIZE" />
 
     <!-- Features -->
     <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
@@ -21,7 +35,7 @@
     <uses-feature android:name="android.hardware.wifi" android:required="false" />
 
     <application
-        android:label="flux"
+        android:label="Flux Share"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

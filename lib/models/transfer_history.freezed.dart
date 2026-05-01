@@ -22,16 +22,14 @@ TransferHistory _$TransferHistoryFromJson(Map<String, dynamic> json) {
 /// @nodoc
 mixin _$TransferHistory {
   String get id => throw _privateConstructorUsedError;
+  String get deviceId => throw _privateConstructorUsedError;
+  String get deviceName => throw _privateConstructorUsedError;
   String get fileName => throw _privateConstructorUsedError;
   int get fileSize => throw _privateConstructorUsedError;
   TransferDirection get direction => throw _privateConstructorUsedError;
-  TransferStatus get status => throw _privateConstructorUsedError;
   DateTime get timestamp => throw _privateConstructorUsedError;
-  String? get peerDeviceName => throw _privateConstructorUsedError;
-  String? get peerIpAddress => throw _privateConstructorUsedError;
-  double? get progress => throw _privateConstructorUsedError;
-  double? get speed => throw _privateConstructorUsedError;
-  String? get errorMessage => throw _privateConstructorUsedError;
+  bool get success => throw _privateConstructorUsedError;
+  String? get error => throw _privateConstructorUsedError;
 
   /// Serializes this TransferHistory to a JSON map.
   Map<String, dynamic> toJson() => throw _privateConstructorUsedError;
@@ -52,16 +50,14 @@ abstract class $TransferHistoryCopyWith<$Res> {
   @useResult
   $Res call({
     String id,
+    String deviceId,
+    String deviceName,
     String fileName,
     int fileSize,
     TransferDirection direction,
-    TransferStatus status,
     DateTime timestamp,
-    String? peerDeviceName,
-    String? peerIpAddress,
-    double? progress,
-    double? speed,
-    String? errorMessage,
+    bool success,
+    String? error,
   });
 }
 
@@ -81,22 +77,28 @@ class _$TransferHistoryCopyWithImpl<$Res, $Val extends TransferHistory>
   @override
   $Res call({
     Object? id = null,
+    Object? deviceId = null,
+    Object? deviceName = null,
     Object? fileName = null,
     Object? fileSize = null,
     Object? direction = null,
-    Object? status = null,
     Object? timestamp = null,
-    Object? peerDeviceName = freezed,
-    Object? peerIpAddress = freezed,
-    Object? progress = freezed,
-    Object? speed = freezed,
-    Object? errorMessage = freezed,
+    Object? success = null,
+    Object? error = freezed,
   }) {
     return _then(
       _value.copyWith(
             id: null == id
                 ? _value.id
                 : id // ignore: cast_nullable_to_non_nullable
+                      as String,
+            deviceId: null == deviceId
+                ? _value.deviceId
+                : deviceId // ignore: cast_nullable_to_non_nullable
+                      as String,
+            deviceName: null == deviceName
+                ? _value.deviceName
+                : deviceName // ignore: cast_nullable_to_non_nullable
                       as String,
             fileName: null == fileName
                 ? _value.fileName
@@ -110,33 +112,17 @@ class _$TransferHistoryCopyWithImpl<$Res, $Val extends TransferHistory>
                 ? _value.direction
                 : direction // ignore: cast_nullable_to_non_nullable
                       as TransferDirection,
-            status: null == status
-                ? _value.status
-                : status // ignore: cast_nullable_to_non_nullable
-                      as TransferStatus,
             timestamp: null == timestamp
                 ? _value.timestamp
                 : timestamp // ignore: cast_nullable_to_non_nullable
                       as DateTime,
-            peerDeviceName: freezed == peerDeviceName
-                ? _value.peerDeviceName
-                : peerDeviceName // ignore: cast_nullable_to_non_nullable
-                      as String?,
-            peerIpAddress: freezed == peerIpAddress
-                ? _value.peerIpAddress
-                : peerIpAddress // ignore: cast_nullable_to_non_nullable
-                      as String?,
-            progress: freezed == progress
-                ? _value.progress
-                : progress // ignore: cast_nullable_to_non_nullable
-                      as double?,
-            speed: freezed == speed
-                ? _value.speed
-                : speed // ignore: cast_nullable_to_non_nullable
-                      as double?,
-            errorMessage: freezed == errorMessage
-                ? _value.errorMessage
-                : errorMessage // ignore: cast_nullable_to_non_nullable
+            success: null == success
+                ? _value.success
+                : success // ignore: cast_nullable_to_non_nullable
+                      as bool,
+            error: freezed == error
+                ? _value.error
+                : error // ignore: cast_nullable_to_non_nullable
                       as String?,
           )
           as $Val,
@@ -155,16 +141,14 @@ abstract class _$$TransferHistoryImplCopyWith<$Res>
   @useResult
   $Res call({
     String id,
+    String deviceId,
+    String deviceName,
     String fileName,
     int fileSize,
     TransferDirection direction,
-    TransferStatus status,
     DateTime timestamp,
-    String? peerDeviceName,
-    String? peerIpAddress,
-    double? progress,
-    double? speed,
-    String? errorMessage,
+    bool success,
+    String? error,
   });
 }
 
@@ -183,22 +167,28 @@ class __$$TransferHistoryImplCopyWithImpl<$Res>
   @override
   $Res call({
     Object? id = null,
+    Object? deviceId = null,
+    Object? deviceName = null,
     Object? fileName = null,
     Object? fileSize = null,
     Object? direction = null,
-    Object? status = null,
     Object? timestamp = null,
-    Object? peerDeviceName = freezed,
-    Object? peerIpAddress = freezed,
-    Object? progress = freezed,
-    Object? speed = freezed,
-    Object? errorMessage = freezed,
+    Object? success = null,
+    Object? error = freezed,
   }) {
     return _then(
       _$TransferHistoryImpl(
         id: null == id
             ? _value.id
             : id // ignore: cast_nullable_to_non_nullable
+                  as String,
+        deviceId: null == deviceId
+            ? _value.deviceId
+            : deviceId // ignore: cast_nullable_to_non_nullable
+                  as String,
+        deviceName: null == deviceName
+            ? _value.deviceName
+            : deviceName // ignore: cast_nullable_to_non_nullable
                   as String,
         fileName: null == fileName
             ? _value.fileName
@@ -212,33 +202,17 @@ class __$$TransferHistoryImplCopyWithImpl<$Res>
             ? _value.direction
             : direction // ignore: cast_nullable_to_non_nullable
                   as TransferDirection,
-        status: null == status
-            ? _value.status
-            : status // ignore: cast_nullable_to_non_nullable
-                  as TransferStatus,
         timestamp: null == timestamp
             ? _value.timestamp
             : timestamp // ignore: cast_nullable_to_non_nullable
                   as DateTime,
-        peerDeviceName: freezed == peerDeviceName
-            ? _value.peerDeviceName
-            : peerDeviceName // ignore: cast_nullable_to_non_nullable
-                  as String?,
-        peerIpAddress: freezed == peerIpAddress
-            ? _value.peerIpAddress
-            : peerIpAddress // ignore: cast_nullable_to_non_nullable
-                  as String?,
-        progress: freezed == progress
-            ? _value.progress
-            : progress // ignore: cast_nullable_to_non_nullable
-                  as double?,
-        speed: freezed == speed
-            ? _value.speed
-            : speed // ignore: cast_nullable_to_non_nullable
-                  as double?,
-        errorMessage: freezed == errorMessage
-            ? _value.errorMessage
-            : errorMessage // ignore: cast_nullable_to_non_nullable
+        success: null == success
+            ? _value.success
+            : success // ignore: cast_nullable_to_non_nullable
+                  as bool,
+        error: freezed == error
+            ? _value.error
+            : error // ignore: cast_nullable_to_non_nullable
                   as String?,
       ),
     );
@@ -250,16 +224,14 @@ class __$$TransferHistoryImplCopyWithImpl<$Res>
 class _$TransferHistoryImpl implements _TransferHistory {
   const _$TransferHistoryImpl({
     required this.id,
+    required this.deviceId,
+    required this.deviceName,
     required this.fileName,
     required this.fileSize,
     required this.direction,
-    required this.status,
     required this.timestamp,
-    this.peerDeviceName,
-    this.peerIpAddress,
-    this.progress,
-    this.speed,
-    this.errorMessage,
+    required this.success,
+    this.error,
   });
 
   factory _$TransferHistoryImpl.fromJson(Map<String, dynamic> json) =>
@@ -268,29 +240,25 @@ class _$TransferHistoryImpl implements _TransferHistory {
   @override
   final String id;
   @override
+  final String deviceId;
+  @override
+  final String deviceName;
+  @override
   final String fileName;
   @override
   final int fileSize;
   @override
   final TransferDirection direction;
   @override
-  final TransferStatus status;
-  @override
   final DateTime timestamp;
   @override
-  final String? peerDeviceName;
+  final bool success;
   @override
-  final String? peerIpAddress;
-  @override
-  final double? progress;
-  @override
-  final double? speed;
-  @override
-  final String? errorMessage;
+  final String? error;
 
   @override
   String toString() {
-    return 'TransferHistory(id: $id, fileName: $fileName, fileSize: $fileSize, direction: $direction, status: $status, timestamp: $timestamp, peerDeviceName: $peerDeviceName, peerIpAddress: $peerIpAddress, progress: $progress, speed: $speed, errorMessage: $errorMessage)';
+    return 'TransferHistory(id: $id, deviceId: $deviceId, deviceName: $deviceName, fileName: $fileName, fileSize: $fileSize, direction: $direction, timestamp: $timestamp, success: $success, error: $error)';
   }
 
   @override
@@ -299,24 +267,20 @@ class _$TransferHistoryImpl implements _TransferHistory {
         (other.runtimeType == runtimeType &&
             other is _$TransferHistoryImpl &&
             (identical(other.id, id) || other.id == id) &&
+            (identical(other.deviceId, deviceId) ||
+                other.deviceId == deviceId) &&
+            (identical(other.deviceName, deviceName) ||
+                other.deviceName == deviceName) &&
             (identical(other.fileName, fileName) ||
                 other.fileName == fileName) &&
             (identical(other.fileSize, fileSize) ||
                 other.fileSize == fileSize) &&
             (identical(other.direction, direction) ||
                 other.direction == direction) &&
-            (identical(other.status, status) || other.status == status) &&
             (identical(other.timestamp, timestamp) ||
                 other.timestamp == timestamp) &&
-            (identical(other.peerDeviceName, peerDeviceName) ||
-                other.peerDeviceName == peerDeviceName) &&
-            (identical(other.peerIpAddress, peerIpAddress) ||
-                other.peerIpAddress == peerIpAddress) &&
-            (identical(other.progress, progress) ||
-                other.progress == progress) &&
-            (identical(other.speed, speed) || other.speed == speed) &&
-            (identical(other.errorMessage, errorMessage) ||
-                other.errorMessage == errorMessage));
+            (identical(other.success, success) || other.success == success) &&
+            (identical(other.error, error) || other.error == error));
   }
 
   @JsonKey(includeFromJson: false, includeToJson: false)
@@ -324,16 +288,14 @@ class _$TransferHistoryImpl implements _TransferHistory {
   int get hashCode => Object.hash(
     runtimeType,
     id,
+    deviceId,
+    deviceName,
     fileName,
     fileSize,
     direction,
-    status,
     timestamp,
-    peerDeviceName,
-    peerIpAddress,
-    progress,
-    speed,
-    errorMessage,
+    success,
+    error,
   );
 
   /// Create a copy of TransferHistory
@@ -356,16 +318,14 @@ class _$TransferHistoryImpl implements _TransferHistory {
 abstract class _TransferHistory implements TransferHistory {
   const factory _TransferHistory({
     required final String id,
+    required final String deviceId,
+    required final String deviceName,
     required final String fileName,
     required final int fileSize,
     required final TransferDirection direction,
-    required final TransferStatus status,
     required final DateTime timestamp,
-    final String? peerDeviceName,
-    final String? peerIpAddress,
-    final double? progress,
-    final double? speed,
-    final String? errorMessage,
+    required final bool success,
+    final String? error,
   }) = _$TransferHistoryImpl;
 
   factory _TransferHistory.fromJson(Map<String, dynamic> json) =
@@ -374,25 +334,21 @@ abstract class _TransferHistory implements TransferHistory {
   @override
   String get id;
   @override
+  String get deviceId;
+  @override
+  String get deviceName;
+  @override
   String get fileName;
   @override
   int get fileSize;
   @override
   TransferDirection get direction;
   @override
-  TransferStatus get status;
-  @override
   DateTime get timestamp;
   @override
-  String? get peerDeviceName;
+  bool get success;
   @override
-  String? get peerIpAddress;
-  @override
-  double? get progress;
-  @override
-  double? get speed;
-  @override
-  String? get errorMessage;
+  String? get error;
 
   /// Create a copy of TransferHistory
   /// with the given fields replaced by the non-null parameter values.

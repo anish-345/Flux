@@ -4,7 +4,32 @@ inclusion: auto
 
 # Flux Design System & Architecture Guide
 
+**Quick Navigation:** [Design System](#design-system) | [Architecture](#architecture) | [UI/UX Guidelines](#uiux-guidelines) | [Networking](#networking--file-transfer) | [Rust Integration](#rust-integration) | [Development Guidelines](#development-guidelines)
+
+**Last Updated:** April 12, 2026  
+**Status:** ✅ Active Knowledge Base  
+**Confidence Level:** High (Tested and Verified)  
+**Use Case:** Comprehensive guide for Flux app development, design patterns, and implementation standards
+
+---
+
+## 📋 Document Summary
+
+This guide provides comprehensive standards for Flux app development:
+- **Design System:** Colors, typography, spacing, shadows, and visual standards
+- **Architecture:** Project structure, service patterns, state management, data models
+- **UI/UX Guidelines:** Screen design, components, interactions, and animations
+- **Networking & File Transfer:** Connection types, protocols, security, and encryption
+- **Rust Integration:** Module organization, FFI bindings, and native code
+- **Development Guidelines:** Code style, error handling, testing, and performance
+- **Constants & Permissions:** Network settings, file transfer limits, and platform permissions
+
+**When to use:** Auto-included in all contexts for consistency. Reference when developing Flux features or maintaining design standards.
+
+---
+
 ## Overview
+
 Flux is a cross-platform file sharing application built with Flutter and Rust. This document outlines the design system, architecture patterns, and implementation guidelines.
 
 ## Design System

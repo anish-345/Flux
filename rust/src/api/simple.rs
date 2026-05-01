@@ -1,10 +1,6 @@
-#[flutter_rust_bridge::frb(sync)] // Synchronous mode for simplicity of the demo
-pub fn greet(name: String) -> String {
-    format!("Hello, {name}!")
-}
-
+/// Initialise flutter_rust_bridge default utilities.
+/// This function MUST exist and be annotated with `#[flutter_rust_bridge::frb(init)]`.
 #[flutter_rust_bridge::frb(init)]
 pub fn init_app() {
-    // Default utilities - feel free to customize
     flutter_rust_bridge::setup_default_user_utils();
 }

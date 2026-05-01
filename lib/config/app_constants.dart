@@ -1,7 +1,7 @@
 /// Application-wide constants
 class AppConstants {
   // App Info
-  static const String appName = 'Flux';
+  static const String appName = 'Flux Share';
   static const String appVersion = '1.0.0';
   static const String appDescription = 'Fast & Secure File Sharing';
 

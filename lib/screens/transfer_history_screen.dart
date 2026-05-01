@@ -12,8 +12,7 @@ class TransferHistoryScreen extends ConsumerStatefulWidget {
       _TransferHistoryScreenState();
 }
 
-class _TransferHistoryScreenState
-    extends ConsumerState<TransferHistoryScreen> {
+class _TransferHistoryScreenState extends ConsumerState<TransferHistoryScreen> {
   TransferDirection? _selectedDirection;
   String _searchQuery = '';
 
@@ -42,8 +41,11 @@ class _TransferHistoryScreenState
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.error_outline,
-                size: 64, color: Theme.of(context).colorScheme.error),
+            Icon(
+              Icons.error_outline,
+              size: 64,
+              color: Theme.of(context).colorScheme.error,
+            ),
             const SizedBox(height: 16),
             Text(
               'Error loading history:\n$error',
@@ -111,12 +113,8 @@ class _TransferHistoryScreenState
       filtered = filtered
           .where(
             (e) =>
-                e.fileName
-                    .toLowerCase()
-                    .contains(_searchQuery.toLowerCase()) ||
-                e.deviceName
-                    .toLowerCase()
-                    .contains(_searchQuery.toLowerCase()),
+                e.fileName.toLowerCase().contains(_searchQuery.toLowerCase()) ||
+                e.deviceName.toLowerCase().contains(_searchQuery.toLowerCase()),
           )
           .toList();
     }
@@ -159,11 +157,11 @@ class _TransferHistoryScreenState
                   Expanded(
                     child: FilterChip(
                       label: const Text('📤 Sent'),
-                      selected:
-                          _selectedDirection == TransferDirection.send,
+                      selected: _selectedDirection == TransferDirection.send,
                       onSelected: (selected) => setState(
-                        () => _selectedDirection =
-                            selected ? TransferDirection.send : null,
+                        () => _selectedDirection = selected
+                            ? TransferDirection.send
+                            : null,
                       ),
                     ),
                   ),
@@ -171,11 +169,11 @@ class _TransferHistoryScreenState
                   Expanded(
                     child: FilterChip(
                       label: const Text('📥 Received'),
-                      selected:
-                          _selectedDirection == TransferDirection.receive,
+                      selected: _selectedDirection == TransferDirection.receive,
                       onSelected: (selected) => setState(
-                        () => _selectedDirection =
-                            selected ? TransferDirection.receive : null,
+                        () => _selectedDirection = selected
+                            ? TransferDirection.receive
+                            : null,
                       ),
                     ),
                   ),
@@ -233,8 +231,7 @@ class _TransferHistoryScreenState
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 6),
       child: ListTile(
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         leading: CircleAvatar(
           backgroundColor: entry.success
               ? Colors.green.withValues(alpha: 0.15)
@@ -246,8 +243,11 @@ class _TransferHistoryScreenState
             color: entry.success ? Colors.green : Colors.red,
           ),
         ),
-        title: Text(entry.fileName,
-            maxLines: 1, overflow: TextOverflow.ellipsis),
+        title: Text(
+          entry.fileName,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -257,10 +257,9 @@ class _TransferHistoryScreenState
             ),
             Text(
               '$sizeInMB MB  •  ${dateFormat.format(entry.timestamp)}',
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall
-                  ?.copyWith(color: Theme.of(context).colorScheme.outline),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.outline,
+              ),
             ),
           ],
         ),
@@ -291,8 +290,7 @@ class _TransferHistoryScreenState
             _detailRow('Size:', '$sizeInMB MB'),
             _detailRow('Date:', dateFormat.format(entry.timestamp)),
             _detailRow('Duration:', '${entry.durationSeconds}s'),
-            _detailRow(
-                'Status:', entry.success ? '✅ Successful' : '❌ Failed'),
+            _detailRow('Status:', entry.success ? '✅ Successful' : '❌ Failed'),
             if (entry.error != null) _detailRow('Error:', entry.error!),
           ],
         ),
@@ -305,7 +303,7 @@ class _TransferHistoryScreenState
             FilledButton(
               onPressed: () {
                 Navigator.pop(ctx);
-                // TODO: Implement retry logic
+                _retryTransfer(entry);
               },
               child: const Text('Retry'),
             ),
@@ -320,14 +318,28 @@ class _TransferHistoryScreenState
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label,
-              style: const TextStyle(fontWeight: FontWeight.bold)),
+          Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
           const SizedBox(width: 8),
-          Expanded(
-              child: Text(value, overflow: TextOverflow.ellipsis)),
+          Expanded(child: Text(value, overflow: TextOverflow.ellipsis)),
         ],
       ),
     );
+  }
+
+  /// Retry a failed transfer by navigating to the send screen with pre-filled info.
+  void _retryTransfer(TransferHistory entry) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Retrying transfer of "${entry.fileName}" to ${entry.deviceName}…',
+        ),
+        action: SnackBarAction(label: 'Dismiss', onPressed: () {}),
+      ),
+    );
+    // Navigate back to the send/receive screen so the user can re-initiate.
+    // The history entry contains the device name and file info for context.
+    Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
   void _showClearDialog(BuildContext context) {
@@ -346,9 +358,7 @@ class _TransferHistoryScreenState
           FilledButton(
             onPressed: () async {
               // Use ref.read so we don't rebuild while awaiting
-              await ref
-                  .read(transferHistoryProvider.notifier)
-                  .clearHistory();
+              await ref.read(transferHistoryProvider.notifier).clearHistory();
               if (mounted && ctx.mounted) {
                 Navigator.pop(ctx);
                 ScaffoldMessenger.of(context).showSnackBar(

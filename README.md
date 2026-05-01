@@ -253,7 +253,8 @@ flutter build apk --release
 
 ### Key Packages
 - **flutter_rust_bridge** (2.11.1) - Rust integration
-- **provider** (6.0.0) - State management
+- **flutter_riverpod** (2.4.0) - State management
+- **riverpod_annotation** (2.3.0) - Riverpod code generation
 - **freezed_annotation** (2.4.0) - Data models
 - **flutter_blue_plus** (1.31.0) - Bluetooth
 - **connectivity_plus** (5.0.0) - Network
@@ -319,7 +320,7 @@ MIT License - See LICENSE file for details
 - [Flutter Docs](https://flutter.dev/docs)
 - [Dart Docs](https://dart.dev/guides)
 - [Material Design 3](https://m3.material.io/)
-- [Provider Package](https://pub.dev/packages/provider)
+- [Riverpod Package](https://pub.dev/packages/flutter_riverpod)
 - [Flutter Rust Bridge](https://cjycode.com/flutter_rust_bridge/)
 
 ## 📞 Contact

@@ -4,8 +4,9 @@ import 'package:flux/models/file_metadata.dart';
 import 'package:flux/utils/logger.dart';
 
 /// Provider for managing active file transfers with proper async handling
+/// Uses Map for O(1) updates instead of O(N) list operations
 final fileTransferProvider =
-    AsyncNotifierProvider<FileTransferNotifier, List<TransferStatus>>(
+    AsyncNotifierProvider<FileTransferNotifier, Map<String, TransferStatus>>(
       FileTransferNotifier.new,
     );
 
@@ -16,22 +17,18 @@ final transferHistoryProvider =
     );
 
 /// Provider for getting active transfers only
-final activeTransfersProvider = Provider<AsyncValue<List<TransferStatus>>>((
-  ref,
-) {
+final activeTransfersProvider = Provider<AsyncValue<List<TransferStatus>>>((ref) {
   final transfers = ref.watch(fileTransferProvider);
   return transfers.whenData(
-    (list) => list.where((t) => t.state.isActive).toList(),
+    (map) => map.values.where((t) => t.state.isActive).toList(),
   );
 });
 
 /// Provider for getting completed transfers
-final completedTransfersProvider = Provider<AsyncValue<List<TransferStatus>>>((
-  ref,
-) {
+final completedTransfersProvider = Provider<AsyncValue<List<TransferStatus>>>((ref) {
   final transfers = ref.watch(fileTransferProvider);
   return transfers.whenData(
-    (list) => list.where((t) => t.state.isTerminal).toList(),
+    (map) => map.values.where((t) => t.state.isTerminal).toList(),
   );
 });
 
@@ -40,10 +37,10 @@ final totalTransferProgressProvider = Provider<double>((ref) {
   final transfers = ref.watch(fileTransferProvider);
 
   return transfers.when(
-    data: (list) {
-      if (list.isEmpty) return 0.0;
-      final totalBytes = list.fold<int>(0, (sum, t) => sum + t.totalBytes);
-      final transferredBytes = list.fold<int>(
+    data: (map) {
+      if (map.isEmpty) return 0.0;
+      final totalBytes = map.values.fold<int>(0, (sum, t) => sum + t.totalBytes);
+      final transferredBytes = map.values.fold<int>(
         0,
         (sum, t) => sum + t.transferredBytes,
       );
@@ -55,18 +52,18 @@ final totalTransferProgressProvider = Provider<double>((ref) {
   );
 });
 
-class FileTransferNotifier extends AsyncNotifier<List<TransferStatus>> {
+class FileTransferNotifier extends AsyncNotifier<Map<String, TransferStatus>> {
   @override
-  FutureOr<List<TransferStatus>> build() async {
-    // Initialize from storage or return empty list
-    return [];
+  FutureOr<Map<String, TransferStatus>> build() async {
+    // Initialize from storage or return empty map
+    return {};
   }
 
   Future<void> addTransfer(TransferStatus transfer) async {
     state = await AsyncValue.guard(() async {
       final current = await future;
       AppLogger.info('Transfer added: ${transfer.fileId}');
-      return [...current, transfer];
+      return {...current, transfer.fileId: transfer};
     });
   }
 
@@ -77,12 +74,10 @@ class FileTransferNotifier extends AsyncNotifier<List<TransferStatus>> {
     state = await AsyncValue.guard(() async {
       final current = await future;
       AppLogger.info('Transfer updated: $fileId');
-      return current.map((transfer) {
-        if (transfer.fileId == fileId) {
-          return updatedTransfer;
-        }
-        return transfer;
-      }).toList();
+      if (current.containsKey(fileId)) {
+        return {...current, fileId: updatedTransfer};
+      }
+      return current;
     });
   }
 
@@ -94,16 +89,15 @@ class FileTransferNotifier extends AsyncNotifier<List<TransferStatus>> {
   ) async {
     state = await AsyncValue.guard(() async {
       final current = await future;
-      return current.map((transfer) {
-        if (transfer.fileId == fileId) {
-          return transfer.copyWith(
-            transferredBytes: transferredBytes,
-            speed: speed,
-            remainingSeconds: remainingSeconds,
-          );
-        }
-        return transfer;
-      }).toList();
+      final transfer = current[fileId];
+      if (transfer != null) {
+        return {...current, fileId: transfer.copyWith(
+          transferredBytes: transferredBytes,
+          speed: speed,
+          remainingSeconds: remainingSeconds,
+        )};
+      }
+      return current;
     });
   }
 
@@ -111,12 +105,11 @@ class FileTransferNotifier extends AsyncNotifier<List<TransferStatus>> {
     state = await AsyncValue.guard(() async {
       final current = await future;
       AppLogger.info('Transfer paused: $fileId');
-      return current.map((transfer) {
-        if (transfer.fileId == fileId) {
-          return transfer.copyWith(state: TransferState.paused);
-        }
-        return transfer;
-      }).toList();
+      final transfer = current[fileId];
+      if (transfer != null) {
+        return {...current, fileId: transfer.copyWith(state: TransferState.paused)};
+      }
+      return current;
     });
   }
 
@@ -124,12 +117,11 @@ class FileTransferNotifier extends AsyncNotifier<List<TransferStatus>> {
     state = await AsyncValue.guard(() async {
       final current = await future;
       AppLogger.info('Transfer resumed: $fileId');
-      return current.map((transfer) {
-        if (transfer.fileId == fileId) {
-          return transfer.copyWith(state: TransferState.inProgress);
-        }
-        return transfer;
-      }).toList();
+      final transfer = current[fileId];
+      if (transfer != null) {
+        return {...current, fileId: transfer.copyWith(state: TransferState.inProgress)};
+      }
+      return current;
     });
   }
 
@@ -137,12 +129,11 @@ class FileTransferNotifier extends AsyncNotifier<List<TransferStatus>> {
     state = await AsyncValue.guard(() async {
       final current = await future;
       AppLogger.info('Transfer cancelled: $fileId');
-      return current.map((transfer) {
-        if (transfer.fileId == fileId) {
-          return transfer.copyWith(state: TransferState.cancelled);
-        }
-        return transfer;
-      }).toList();
+      final transfer = current[fileId];
+      if (transfer != null) {
+        return {...current, fileId: transfer.copyWith(state: TransferState.cancelled)};
+      }
+      return current;
     });
   }
 
@@ -150,15 +141,14 @@ class FileTransferNotifier extends AsyncNotifier<List<TransferStatus>> {
     state = await AsyncValue.guard(() async {
       final current = await future;
       AppLogger.info('Transfer completed: $fileId');
-      return current.map((transfer) {
-        if (transfer.fileId == fileId) {
-          return transfer.copyWith(
-            state: TransferState.completed,
-            completedAt: DateTime.now(),
-          );
-        }
-        return transfer;
-      }).toList();
+      final transfer = current[fileId];
+      if (transfer != null) {
+        return {...current, fileId: transfer.copyWith(
+          state: TransferState.completed,
+          completedAt: DateTime.now(),
+        )};
+      }
+      return current;
     });
   }
 
@@ -166,16 +156,15 @@ class FileTransferNotifier extends AsyncNotifier<List<TransferStatus>> {
     state = await AsyncValue.guard(() async {
       final current = await future;
       AppLogger.info('Transfer failed: $fileId - $error');
-      return current.map((transfer) {
-        if (transfer.fileId == fileId) {
-          return transfer.copyWith(
-            state: TransferState.failed,
-            error: error,
-            completedAt: DateTime.now(),
-          );
-        }
-        return transfer;
-      }).toList();
+      final transfer = current[fileId];
+      if (transfer != null) {
+        return {...current, fileId: transfer.copyWith(
+          state: TransferState.failed,
+          error: error,
+          completedAt: DateTime.now(),
+        )};
+      }
+      return current;
     });
   }
 
@@ -183,7 +172,9 @@ class FileTransferNotifier extends AsyncNotifier<List<TransferStatus>> {
     state = await AsyncValue.guard(() async {
       final current = await future;
       AppLogger.info('Transfer removed: $fileId');
-      return current.where((transfer) => transfer.fileId != fileId).toList();
+      final newMap = Map<String, TransferStatus>.from(current);
+      newMap.remove(fileId);
+      return newMap;
     });
   }
 
@@ -191,23 +182,21 @@ class FileTransferNotifier extends AsyncNotifier<List<TransferStatus>> {
     state = await AsyncValue.guard(() async {
       final current = await future;
       AppLogger.info('Completed transfers cleared');
-      return current.where((transfer) => !transfer.state.isTerminal).toList();
+      final newMap = Map<String, TransferStatus>.from(current);
+      newMap.removeWhere((key, transfer) => transfer.state.isTerminal);
+      return newMap;
     });
   }
 
   TransferStatus? getTransferById(String fileId) {
     return state.whenData((transfers) {
-      try {
-        return transfers.firstWhere((transfer) => transfer.fileId == fileId);
-      } catch (e) {
-        return null;
-      }
+      return transfers[fileId];
     }).value;
   }
 
   int getActiveTransfersCount() {
     return state.whenData((transfers) {
-          return transfers.where((transfer) => transfer.state.isActive).length;
+          return transfers.values.where((transfer) => transfer.state.isActive).length;
         }).value ??
         0;
   }
@@ -215,11 +204,11 @@ class FileTransferNotifier extends AsyncNotifier<List<TransferStatus>> {
   double getTotalTransferProgress() {
     return state.whenData((transfers) {
           if (transfers.isEmpty) return 0.0;
-          final totalBytes = transfers.fold<int>(
+          final totalBytes = transfers.values.fold<int>(
             0,
             (sum, t) => sum + t.totalBytes,
           );
-          final transferredBytes = transfers.fold<int>(
+          final transferredBytes = transfers.values.fold<int>(
             0,
             (sum, t) => sum + t.transferredBytes,
           );

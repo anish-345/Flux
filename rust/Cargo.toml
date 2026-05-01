@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-flutter_rust_bridge = "=2.11.1"
+flutter_rust_bridge = "=2.12.0"
 sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 aes-gcm = "0.10"
@@ -15,6 +15,8 @@ rand = "0.8"
 hex = "0.4"
 lazy_static = "1.4"
 async-trait = "0.1"
+mdns-sd = "0.13"
+if-addrs = "0.13"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

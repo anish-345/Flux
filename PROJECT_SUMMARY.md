@@ -40,7 +40,7 @@ Flux is a modern, cross-platform file sharing application built with Flutter and
 
 #### Frontend
 - **Framework**: Flutter 3.10.7+
-- **State Management**: Provider 6.0.0
+- **State Management**: Riverpod 2.4.0
 - **UI Components**: Material Design 3
 - **Fonts**: Google Fonts (Inter)
 - **Animations**: Lottie, Shimmer

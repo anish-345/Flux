@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flux/src/rust/frb_generated.dart';
@@ -12,13 +13,18 @@ import 'package:flux/screens/home_screen.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialize Rust bridge
+  // Initialize Rust bridge - CRITICAL: Must succeed for crypto operations
   try {
     await RustLib.init();
     AppLogger.info('✅ Rust bridge initialized successfully');
   } catch (e) {
-    AppLogger.error('❌ Failed to initialize Rust bridge', e);
-    // Continue anyway - Rust features may not be critical
+    AppLogger.error(
+      '❌ FATAL: Rust bridge initialization failed - crypto unavailable',
+      e,
+    );
+    // Show blocking error UI - Rust is required for security
+    runApp(const ProviderScope(child: UnsupportedDeviceScreen()));
+    return;
   }
 
   // Initialize services
@@ -73,13 +79,64 @@ class MyApp extends ConsumerWidget {
     final settings = ref.watch(settingsProvider);
 
     return MaterialApp(
-      title: 'Flux',
+      title: 'Flux Share',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme(),
       darkTheme: AppTheme.darkTheme(),
       themeMode: settings.themeMode,
       locale: Locale(settings.languageCode),
       home: const HomeScreen(),
+    );
+  }
+}
+
+/// Screen shown when Rust bridge initialization fails
+/// This is a blocking error because crypto is required for security
+class UnsupportedDeviceScreen extends StatelessWidget {
+  const UnsupportedDeviceScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Flux Share - Unsupported Device',
+      debugShowCheckedModeBanner: false,
+      theme: AppTheme.lightTheme(),
+      darkTheme: AppTheme.darkTheme(),
+      home: Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.error_outline, size: 64, color: Colors.red),
+                const SizedBox(height: 24),
+                const Text(
+                  'Device Not Supported',
+                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'Flux Share requires native cryptography support that is not available on this device.\n\n'
+                  'This is a security requirement to protect your files during transfer.',
+                  style: TextStyle(fontSize: 16, color: Colors.grey),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 32),
+                ElevatedButton.icon(
+                  onPressed: () {
+                    // Exit app
+                    exit(1);
+                  },
+                  icon: const Icon(Icons.exit_to_app),
+                  label: const Text('Exit'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

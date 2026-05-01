@@ -1,0 +1,672 @@
+# Flux Project - Architecture Diagrams & Visual Reference
+
+**Created:** May 1, 2026
+
+---
+
+## 1. System Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        FLUX APPLICATION                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │         PRESENTATION LAYER (Flutter UI)                 │  │
+│  │  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐   │  │
+│  │  │ HomeScreen  │  │ Device Disc. │  │ File Transfer│   │  │
+│  │  └─────────────┘  └──────────────┘  └──────────────┘   │  │
+│  │  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐   │  │
+│  │  │ Settings    │  │ History      │  │ Web Sharing  │   │  │
+│  │  └─────────────┘  └──────────────┘  └──────────────┘   │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                            ↓                                    │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │    STATE MANAGEMENT LAYER (Riverpod Providers)          │  │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │  │
+│  │  │ fileTransfer │  │ device       │  │ connection   │  │  │
+│  │  │ Provider     │  │ Provider     │  │ Provider     │  │  │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  │  │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │  │
+│  │  │ settings     │  │ history      │  │ derived      │  │  │
+│  │  │ Provider     │  │ Provider     │  │ Providers    │  │  │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                            ↓                                    │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │    BUSINESS LOGIC LAYER (Services)                      │  │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │  │
+│  │  │ FileService  │  │ Connectivity │  │ Encryption   │  │  │
+│  │  │              │  │ Service      │  │ Service      │  │  │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  │  │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │  │
+│  │  │ Bluetooth    │  │ Permission   │  │ Network      │  │  │
+│  │  │ Service      │  │ Service      │  │ Manager      │  │  │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  │  │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │  │
+│  │  │ Hotspot      │  │ FTP Server   │  │ Web Share    │  │  │
+│  │  │ Service      │  │ Service      │  │ Service      │  │  │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                            ↓                                    │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │      DATA LAYER (Rust FFI + Local Storage)              │  │
+│  │  ┌──────────────────────────────────────────────────┐   │  │
+│  │  │  Rust Backend (flutter_rust_bridge)             │   │  │
+│  │  │  ┌──────────┐  ┌──────────┐  ┌──────────────┐  │   │  │
+│  │  │  │ Crypto   │  │ Network  │  │ File Transfer│  │   │  │
+│  │  │  │ Module   │  │ Module   │  │ Module       │  │   │  │
+│  │  │  └──────────┘  └──────────┘  └──────────────┘  │   │  │
+│  │  │  ┌──────────┐  ┌──────────┐  ┌──────────────┐  │   │  │
+│  │  │  │ Async    │  │ Web      │  │ Discovery    │  │   │  │
+│  │  │  │ Ops      │  │ Sharing  │  │ Module       │  │   │  │
+│  │  │  └──────────┘  └──────────┘  └──────────────┘  │   │  │
+│  │  └──────────────────────────────────────────────────┘   │  │
+│  │  ┌──────────────────────────────────────────────────┐   │  │
+│  │  │  Local Storage (SharedPreferences, Files)        │   │  │
+│  │  └──────────────────────────────────────────────────┘   │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 2. Data Flow Diagram
+
+```
+USER INTERACTION
+    │
+    ├─→ Tap Button / Select File / etc.
+    │
+    ↓
+PRESENTATION LAYER
+    │
+    ├─→ Screen/Widget receives event
+    ├─→ Calls ref.watch(provider) or ref.read(provider)
+    │
+    ↓
+STATE MANAGEMENT LAYER
+    │
+    ├─→ Provider notifier receives update
+    ├─→ Calls service method
+    │
+    ↓
+BUSINESS LOGIC LAYER
+    │
+    ├─→ Service processes request
+    ├─→ Calls Rust FFI if needed
+    │
+    ↓
+DATA LAYER
+    │
+    ├─→ Rust performs encryption/hashing/network ops
+    ├─→ Returns result to service
+    │
+    ↓
+BUSINESS LOGIC LAYER
+    │
+    ├─→ Service processes result
+    ├─→ Updates provider state
+    │
+    ↓
+STATE MANAGEMENT LAYER
+    │
+    ├─→ Provider notifies listeners
+    ├─→ Triggers UI rebuild
+    │
+    ↓
+PRESENTATION LAYER
+    │
+    ├─→ Widget rebuilds with new state
+    ├─→ User sees updated UI
+    │
+    ↓
+USER SEES RESULT
+```
+
+---
+
+## 3. File Transfer Flow
+
+```
+SENDER SIDE                          RECEIVER SIDE
+─────────────────────────────────────────────────────
+
+User selects files
+    │
+    ↓
+FileService.pickFiles()
+    │
+    ↓
+Create FileMetadata for each file
+    │
+    ↓
+For each file:
+    │
+    ├─→ Generate session key (Rust)
+    ├─→ Generate nonce (Rust)
+    │
+    ├─→ EncryptionService.encryptFile()
+    │   │
+    │   ├─→ Read file in 64KB chunks
+    │   ├─→ Encrypt each chunk (Rust: AES-256-GCM)
+    │   ├─→ Prepend IV to encrypted data
+    │   └─→ Return encrypted bytes
+    │
+    ├─→ EncryptionService.calculateFileHash()
+    │   │
+    │   └─→ SHA-256 hash of original file
+    │
+    ├─→ Create transfer metadata
+    │   │
+    │   └─→ Include: filename, size, hash, encrypted data
+    │
+    ├─→ Send to receiver via network
+    │   │
+    │   └─→ TCP/UDP/Bluetooth connection
+    │
+    └─→ Update fileTransferProvider with progress
+                                        │
+                                        ↓
+                                    Receive encrypted file
+                                        │
+                                        ↓
+                                    Extract metadata
+                                        │
+                                        ├─→ Filename
+                                        ├─→ File size
+                                        ├─→ Hash
+                                        └─→ Encrypted data
+                                        │
+                                        ↓
+                                    EncryptionService.decryptFile()
+                                        │
+                                        ├─→ Extract IV from encrypted data
+                                        ├─→ Read encrypted data in chunks
+                                        ├─→ Decrypt each chunk (Rust: AES-256-GCM)
+                                        ├─→ Write decrypted bytes to file
+                                        └─→ Return decrypted file path
+                                        │
+                                        ↓
+                                    EncryptionService.verifyFileIntegrity()
+                                        │
+                                        ├─→ Calculate SHA-256 of received file
+                                        ├─→ Compare with received hash
+                                        └─→ Verify match
+                                        │
+                                        ↓
+                                    Save to device storage
+                                        │
+                                        ↓
+                                    Update transferHistoryProvider
+                                        │
+                                        ↓
+                                    User sees completed transfer
+```
+
+---
+
+## 4. Device Discovery Flow
+
+```
+START DISCOVERY
+    │
+    ↓
+BluetoothService.startDiscovery()
+    │
+    ├─→ Scan for Bluetooth devices
+    ├─→ Broadcast UDP discovery packets
+    │
+    ↓
+DEVICES RESPOND
+    │
+    ├─→ Device 1 responds with info
+    ├─→ Device 2 responds with info
+    ├─→ Device 3 responds with info
+    │
+    ↓
+BACKPRESSURE HANDLING
+    │
+    ├─→ Throttle: Limit updates to 300ms intervals
+    ├─→ Batch: Group updates into 500ms batches
+    │
+    ↓
+DeviceNotifier._updateDeviceList()
+    │
+    ├─→ Deduplicate devices by ID
+    ├─→ Update existing devices
+    ├─→ Add new devices
+    ├─→ Update device cache
+    │
+    ↓
+deviceProvider state updated
+    │
+    ├─→ Notify all listeners
+    ├─→ Trigger UI rebuild
+    │
+    ↓
+UI DISPLAYS DEVICES
+    │
+    ├─→ DeviceCard for each device
+    ├─→ Show connection status
+    ├─→ Show device type icon
+    │
+    ↓
+USER SELECTS DEVICE
+    │
+    ├─→ DeviceNotifier.connectToDevice()
+    ├─→ BluetoothService.connectToDeviceById()
+    │
+    ↓
+CONNECTION ESTABLISHED
+    │
+    ├─→ Update device.isConnected = true
+    ├─→ Update deviceProvider
+    ├─→ UI shows connected status
+```
+
+---
+
+## 5. State Management Architecture
+
+```
+RIVERPOD PROVIDER HIERARCHY
+────────────────────────────
+
+┌─────────────────────────────────────────────────────────┐
+│              ROOT PROVIDERS                             │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  fileTransferProvider                                   │
+│  ├─→ Type: AsyncNotifierProvider                       │
+│  ├─→ State: Map<String, TransferStatus>                │
+│  └─→ Methods: add, update, pause, resume, cancel, etc. │
+│                                                         │
+│  deviceProvider                                         │
+│  ├─→ Type: StateNotifierProvider                       │
+│  ├─→ State: List<Device>                               │
+│  └─→ Methods: connect, disconnect, trust, remove, etc. │
+│                                                         │
+│  connectionProvider                                     │
+│  ├─→ Type: StateNotifierProvider                       │
+│  ├─→ State: AppConnectionState                         │
+│  └─→ Methods: update connectivity status               │
+│                                                         │
+│  settingsProvider                                       │
+│  ├─→ Type: StateNotifierProvider                       │
+│  ├─→ State: AppSettings                                │
+│  └─→ Methods: update theme, language, etc.             │
+│                                                         │
+│  transferHistoryProvider                               │
+│  ├─→ Type: AsyncNotifierProvider                       │
+│  ├─→ State: List<TransferHistory>                      │
+│  └─→ Methods: add, remove, clear, filter               │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+                        │
+                        ↓
+┌─────────────────────────────────────────────────────────┐
+│           DERIVED PROVIDERS                             │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  activeTransfersProvider                               │
+│  └─→ Filters: transfers where state.isActive           │
+│                                                         │
+│  completedTransfersProvider                            │
+│  └─→ Filters: transfers where state.isTerminal         │
+│                                                         │
+│  totalTransferProgressProvider                         │
+│  └─→ Calculates: overall progress percentage           │
+│                                                         │
+│  connectedDevicesProvider                              │
+│  └─→ Filters: devices where isConnected == true        │
+│                                                         │
+│  trustedDevicesProvider                                │
+│  └─→ Filters: devices where isTrusted == true          │
+│                                                         │
+│  deviceByIdProvider (Family)                           │
+│  └─→ Lookup: single device by ID                       │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 6. Service Layer Architecture
+
+```
+BASE SERVICE
+────────────
+BaseService
+├─→ logDebug(message)
+├─→ logInfo(message)
+├─→ logWarning(message)
+└─→ logError(message, exception)
+
+SINGLETON SERVICES
+──────────────────
+
+FileService
+├─→ pickFiles()
+├─→ getAppDocumentsDirectory()
+├─→ getFileSize()
+├─→ getMimeType()
+├─→ readFileAsBytes()
+├─→ writeFileAsBytes()
+├─→ deleteFile()
+├─→ copyFile()
+└─→ moveFile()
+
+ConnectivityService
+├─→ getConnectivityStatus()
+├─→ isConnectedToInternet()
+├─→ isConnectedToWiFi()
+├─→ isConnectedToMobile()
+├─→ isBluetoothEnabled()
+├─→ getWiFiSSID()
+├─→ getDeviceIPAddress()
+└─→ onConnectivityChanged() [Stream]
+
+EncryptionService
+├─→ generateKey()
+├─→ generateNonce()
+├─→ encryptFile()
+├─→ decryptFile()
+├─→ encryptText()
+├─→ decryptText()
+├─→ calculateFileHash()
+├─→ verifyFileIntegrity()
+└─→ deriveKeyFromPassword()
+
+BluetoothService
+├─→ initialize()
+├─→ isBluetoothAvailable()
+├─→ startDiscovery()
+├─→ stopDiscovery()
+├─→ connectToDeviceById()
+├─→ disconnectFromDeviceById()
+├─→ discoveredDevicesStream [Stream]
+└─→ connectionStateStream [Stream]
+
+PermissionService
+├─→ initialize()
+├─→ requestPermission()
+├─→ checkPermission()
+└─→ requestMultiplePermissions()
+
+NetworkManagerService
+├─→ configureNetwork()
+└─→ getNetworkStatus()
+
+HotspotService
+├─→ createHotspot()
+├─→ stopHotspot()
+└─→ getHotspotStatus()
+
+FTPServerService
+├─→ startServer()
+├─→ stopServer()
+└─→ serveFile()
+
+WebShareService
+├─→ startWebServer()
+├─→ stopWebServer()
+├─→ generateQRCode()
+└─→ getShareURL()
+
+TransferEngineService
+├─→ initiateTransfer()
+├─→ monitorTransfer()
+├─→ pauseTransfer()
+├─→ resumeTransfer()
+└─→ cancelTransfer()
+```
+
+---
+
+## 7. Rust FFI Communication
+
+```
+DART SIDE                          RUST SIDE
+──────────────────────────────────────────────
+
+┌──────────────────────┐          ┌──────────────────────┐
+│ Dart Code            │          │ Rust Code            │
+│                      │          │                      │
+│ final encrypted =    │          │ pub fn               │
+│   await RustLib      │          │ encrypt_aes_gcm(     │
+│   .encryptAesGcm(    │ ────────→│   plaintext: Vec<u8>,│
+│   plaintext: bytes,  │          │   key: Vec<u8>,      │
+│   key: keyBytes,     │          │   nonce: Vec<u8>     │
+│   nonce: nonceBytes  │          │ ) -> Result<Vec<u8>> │
+│ );                   │          │ {                    │
+│                      │          │   // Encrypt logic   │
+│                      │          │   Ok(ciphertext)     │
+│                      │ ←────────│ }                    │
+│                      │          │                      │
+└──────────────────────┘          └──────────────────────┘
+
+GENERATED BINDINGS
+──────────────────
+
+lib/src/rust/frb_generated.dart
+├─→ RustLib class
+├─→ encryptAesGcm() method
+├─→ decryptAesGcm() method
+├─→ hashSha256() method
+├─→ generateKey() method
+├─→ generateNonce() method
+└─→ Other Rust functions
+
+COMMUNICATION FLOW
+──────────────────
+
+1. Dart calls RustLib.encryptAesGcm()
+2. FFI marshals Dart types to Rust types
+3. Rust function executes
+4. Rust returns result
+5. FFI marshals Rust types back to Dart
+6. Dart receives result
+```
+
+---
+
+## 8. Encryption Flow
+
+```
+ENCRYPTION PROCESS
+──────────────────
+
+Original File (1GB)
+    │
+    ├─→ Generate random 256-bit key (Rust)
+    ├─→ Generate random 96-bit nonce (Rust)
+    │
+    ↓
+Read file in 64KB chunks
+    │
+    ├─→ Chunk 1 (64KB)
+    ├─→ Chunk 2 (64KB)
+    ├─→ Chunk 3 (64KB)
+    ├─→ ...
+    └─→ Chunk N (remaining bytes)
+    │
+    ↓
+For each chunk:
+    │
+    ├─→ Encrypt with AES-256-GCM (Rust)
+    │   ├─→ Input: plaintext chunk
+    │   ├─→ Key: 256-bit key
+    │   ├─→ Nonce: 96-bit nonce
+    │   └─→ Output: ciphertext + auth tag
+    │
+    ├─→ Append to encrypted data
+    ├─→ Update progress callback
+    │
+    ↓
+Prepend IV to encrypted data
+    │
+    ├─→ IV (16 bytes) + Encrypted data
+    │
+    ↓
+Calculate SHA-256 hash (Rust)
+    │
+    ├─→ Hash original file
+    ├─→ Return 32-byte hash
+    │
+    ↓
+Create transfer metadata
+    │
+    ├─→ Filename
+    ├─→ File size
+    ├─→ SHA-256 hash
+    ├─→ Encrypted data
+    └─→ Key (sent via secure channel)
+    │
+    ↓
+Send to receiver
+    │
+    ├─→ Encrypted file
+    ├─→ Metadata
+    └─→ Key (via secure pairing)
+
+DECRYPTION PROCESS
+──────────────────
+
+Receive encrypted file
+    │
+    ├─→ Extract IV (first 16 bytes)
+    ├─→ Extract encrypted data (remaining bytes)
+    │
+    ↓
+Read encrypted data in chunks
+    │
+    ├─→ Chunk 1 (64KB + 16 bytes tag)
+    ├─→ Chunk 2 (64KB + 16 bytes tag)
+    ├─→ ...
+    └─→ Chunk N (remaining bytes)
+    │
+    ↓
+For each chunk:
+    │
+    ├─→ Decrypt with AES-256-GCM (Rust)
+    │   ├─→ Input: ciphertext chunk + auth tag
+    │   ├─→ Key: 256-bit key
+    │   ├─→ Nonce: 96-bit nonce
+    │   └─→ Output: plaintext chunk
+    │
+    ├─→ Write to file
+    ├─→ Update progress callback
+    │
+    ↓
+Calculate SHA-256 hash of decrypted file
+    │
+    ├─→ Hash decrypted file
+    ├─→ Compare with received hash
+    │
+    ↓
+Verify integrity
+    │
+    ├─→ If hashes match: ✅ File is valid
+    ├─→ If hashes don't match: ❌ File is corrupted
+    │
+    ↓
+Save to device storage
+```
+
+---
+
+## 9. Component Interaction Diagram
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    USER INTERFACE                           │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
+│  │ HomeScreen   │  │ Device List  │  │ Transfer     │      │
+│  │              │  │              │  │ Progress     │      │
+│  └──────────────┘  └──────────────┘  └──────────────┘      │
+└────────────────────────┬─────────────────────────────────────┘
+                         │
+                         ↓
+┌─────────────────────────────────────────────────────────────┐
+│              RIVERPOD PROVIDERS                             │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
+│  │ fileTransfer │  │ device       │  │ connection   │      │
+│  │ Provider     │  │ Provider     │  │ Provider     │      │
+│  └──────────────┘  └──────────────┘  └──────────────┘      │
+└────────────────────────┬─────────────────────────────────────┘
+                         │
+                         ↓
+┌─────────────────────────────────────────────────────────────┐
+│              SERVICES LAYER                                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
+│  │ FileService  │  │ Connectivity │  │ Encryption   │      │
+│  │              │  │ Service      │  │ Service      │      │
+│  └──────────────┘  └──────────────┘  └──────────────┘      │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
+│  │ Bluetooth    │  │ Permission   │  │ Network      │      │
+│  │ Service      │  │ Service      │  │ Manager      │      │
+│  └──────────────┘  └──────────────┘  └──────────────┘      │
+└────────────────────────┬─────────────────────────────────────┘
+                         │
+                         ↓
+┌─────────────────────────────────────────────────────────────┐
+│              RUST FFI LAYER                                 │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │  flutter_rust_bridge (FFI Communication)             │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────┬─────────────────────────────────────┘
+                         │
+                         ↓
+┌─────────────────────────────────────────────────────────────┐
+│              RUST BACKEND                                   │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
+│  │ Crypto       │  │ Network      │  │ File Transfer│      │
+│  │ Module       │  │ Module       │  │ Module       │      │
+│  └──────────────┘  └──────────────┘  └──────────────┘      │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
+│  │ Async Ops    │  │ Web Sharing  │  │ Discovery    │      │
+│  │ Module       │  │ Module       │  │ Module       │      │
+│  └──────────────┘  └──────────────┘  └──────────────┘      │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 10. Deployment Architecture
+
+```
+DEVELOPMENT
+────────────
+┌─────────────────────────────────────────┐
+│ Flutter App (Debug)                     │
+│ ├─→ Hot reload enabled                  │
+│ ├─→ Verbose logging                     │
+│ └─→ Development services                │
+└─────────────────────────────────────────┘
+
+PRODUCTION
+──────────
+┌─────────────────────────────────────────┐
+│ Flutter App (Release)                   │
+│ ├─→ Code obfuscation (R8)               │
+│ ├─→ Optimized build                     │
+│ ├─→ Production services                 │
+│ └─→ Crash reporting enabled             │
+└─────────────────────────────────────────┘
+
+PLATFORMS
+─────────
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│ Android      │  │ iOS          │  │ Desktop      │
+│ (Primary)    │  │ (Planned)    │  │ (Windows,    │
+│              │  │              │  │  Linux,      │
+│ APK/AAB      │  │ IPA          │  │  macOS)      │
+└──────────────┘  └──────────────┘  └──────────────┘
+```
+
+---
+
+**End of Architecture Diagrams**
+

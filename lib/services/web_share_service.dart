@@ -1,11 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:isolate';
-import 'dart:typed_data';
-import 'package:flutter/foundation.dart';
+import 'package:archive/archive.dart';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flux/models/file_metadata.dart';
-import 'package:flux/services/network_transfer_service.dart';
+import 'package:flux/services/_web_share_html.dart';
+import 'package:flux/src/rust/api/mdns.dart' as rust_mdns;
 import 'package:flux/utils/logger.dart';
 import 'package:mime/mime.dart';
 
@@ -14,20 +14,18 @@ class _DownloadSession {
   final String fileId;
   final String clientIp;
   final DateTime startedAt;
-  int bytesSent;
-  bool isComplete;
+  int bytesSent = 0;
+  bool isComplete = false;
 
   _DownloadSession({
     required this.fileId,
     required this.clientIp,
     DateTime? startedAt,
-    this.bytesSent = 0,
-    this.isComplete = false,
   }) : startedAt = startedAt ?? DateTime.now();
 }
 
 /// Service for hosting files via HTTP web server for browser-based downloads
-/// Supports concurrent downloads from multiple users
+/// Supports concurrent downloads, browser uploads, and live SSE updates.
 class WebShareService {
   static final WebShareService _instance = WebShareService._internal();
   factory WebShareService() => _instance;
@@ -39,16 +37,31 @@ class WebShareService {
   final Map<String, int> _downloadCounts = {};
   final Map<String, List<_DownloadSession>> _activeDownloads = {};
   final Map<String, StreamController<double>> _downloadProgress = {};
-  final NetworkTransferService _networkService = NetworkTransferService();
   final Set<String> _activeClients = {};
+
+  // SSE clients — each entry is an open HttpResponse for /api/events
+  final List<HttpResponse> _sseClients = [];
+
+  // Receive settings
+  bool _receiveEnabled = false;
+  String? _receiveFolder; // null = system Downloads
+
+  bool get receiveEnabled => _receiveEnabled;
+  String? get receiveFolder => _receiveFolder;
+
+  // Callback fired when a browser uploads a file
+  void Function(String filePath, String fileName)? onFileReceived;
 
   int? _serverPort;
   String? _serverAddress;
-  int _maxConcurrentDownloads = 50; // Support up to 50 concurrent clients
+  String? _mdnsUrl;
+  final int _maxConcurrentDownloads = 50;
 
-  /// Start web server with dynamic port allocation
-  /// Supports multiple concurrent connections
-  Future<Map<String, dynamic>> startServer({List<MapEntry<FileMetadata, String>>? files}) async {
+  static const int _webSharePort = 8080;
+
+  Future<Map<String, dynamic>> startServer({
+    List<MapEntry<FileMetadata, String>>? files,
+  }) async {
     try {
       // Stop existing server if running
       await stopServer();
@@ -70,8 +83,8 @@ class WebShareService {
         }
       }
 
-      // Allocate dynamic port
-      _serverPort = await _networkService.allocateDynamicPort();
+      // Use fixed port 8080 — consistent, memorable, no root needed
+      _serverPort = _webSharePort;
 
       // Start HTTP server with backlog for concurrent connections
       _server = await HttpServer.bind(
@@ -88,7 +101,9 @@ class WebShareService {
       final localIp = await _getLocalIpAddress();
       _serverAddress = 'http://$localIp:$_serverPort';
 
-      AppLogger.info('Web share server started at $_serverAddress (max concurrent: $_maxConcurrentDownloads)');
+      AppLogger.info(
+        'Web share server started at $_serverAddress (max concurrent: $_maxConcurrentDownloads)',
+      );
 
       // Handle requests concurrently
       _server!.listen(
@@ -101,10 +116,30 @@ class WebShareService {
         },
       );
 
+      // Register mDNS — each device gets a unique hostname derived from its
+      // name, so multiple Flux instances on the same WiFi don't collide:
+      //   anish-phone.local:8080, ravi-tablet.local:8080, etc.
+      try {
+        final deviceName = await _getDeviceName();
+        final mdnsResult = await rust_mdns.registerMdnsService(
+          port: _serverPort!,
+          ipAddress: localIp,
+          deviceName: deviceName,
+        );
+        _mdnsUrl = mdnsResult.url;
+        AppLogger.info('mDNS registered: $_mdnsUrl (${mdnsResult.hostname})');
+      } catch (e) {
+        AppLogger.warning('mDNS registration failed: $e');
+        _mdnsUrl = null;
+      }
+
       return {
-        'address': _serverAddress,
+        'address': _serverAddress, // raw IP URL — always works
         'port': _serverPort,
-        'url': _serverAddress,
+        'url':
+            _serverAddress, // primary URL shown in QR (IP-based, always works)
+        'mdnsUrl':
+            _mdnsUrl, // .local URL — works on iOS/macOS/Windows, NOT Android Chrome
         'maxConcurrent': _maxConcurrentDownloads,
       };
     } catch (e) {
@@ -120,31 +155,31 @@ class WebShareService {
         type: InternetAddressType.IPv4,
         includeLoopback: false,
       );
-      
+
       // Prioritize WiFi/ethernet interfaces
       for (final interface in interfaces) {
         // Skip virtual/tunnel interfaces
-        if (interface.name.contains('Virtual') || 
+        if (interface.name.contains('Virtual') ||
             interface.name.contains('Tunnel') ||
             interface.name.contains('Loopback')) {
           continue;
         }
-        
+
         for (final addr in interface.addresses) {
           // Prefer 192.168.x.x or 10.x.x.x (local networks)
-          if (addr.address.startsWith('192.168.') || 
+          if (addr.address.startsWith('192.168.') ||
               addr.address.startsWith('10.') ||
               addr.address.startsWith('172.')) {
             return addr.address;
           }
         }
       }
-      
+
       // Fallback to first available
       if (interfaces.isNotEmpty && interfaces.first.addresses.isNotEmpty) {
         return interfaces.first.addresses.first.address;
       }
-      
+
       return '0.0.0.0';
     } catch (e) {
       AppLogger.error('Failed to get local IP', e);
@@ -152,8 +187,49 @@ class WebShareService {
     }
   }
 
+  /// Get a human-readable device name for the mDNS hostname.
+  /// Returns the device model/name so each device gets a unique .local address.
+  Future<String> _getDeviceName() async {
+    try {
+      final info = DeviceInfoPlugin();
+      if (Platform.isAndroid) {
+        final android = await info.androidInfo;
+        // e.g. "Pixel 7" or "Samsung Galaxy S23"
+        return android.model;
+      } else if (Platform.isWindows) {
+        final windows = await info.windowsInfo;
+        return windows.computerName;
+      } else if (Platform.isLinux) {
+        final linux = await info.linuxInfo;
+        return linux.name;
+      } else if (Platform.isMacOS) {
+        final mac = await info.macOsInfo;
+        return mac.computerName;
+      }
+    } catch (e) {
+      AppLogger.warning('Could not get device name for mDNS: $e');
+    }
+    return ''; // Rust will fall back to flux-xxxx
+  }
+
   /// Stop the web server
   Future<void> stopServer() async {
+    // Close all SSE connections
+    for (final client in _sseClients) {
+      try {
+        await client.close();
+      } catch (_) {}
+    }
+    _sseClients.clear();
+
+    // Unregister mDNS so flux.local stops resolving
+    try {
+      await rust_mdns.unregisterMdnsService();
+    } catch (e) {
+      AppLogger.warning('mDNS unregister failed: $e');
+    }
+    _mdnsUrl = null;
+
     // Close all download progress streams
     for (final controller in _downloadProgress.values) {
       await controller.close();
@@ -164,8 +240,20 @@ class WebShareService {
     _server = null;
     _serverPort = null;
     _serverAddress = null;
-    
+
     AppLogger.info('Web share server stopped');
+  }
+
+  /// Enable or disable browser file uploads.
+  void setReceiveEnabled(bool enabled, {String? folder}) {
+    _receiveEnabled = enabled;
+    if (folder != null) _receiveFolder = folder;
+    _pushSseEvent('settings', jsonEncode({'receiveEnabled': enabled}));
+  }
+
+  /// Set the folder where uploaded files are saved.
+  void setReceiveFolder(String folder) {
+    _receiveFolder = folder;
   }
 
   /// Add files to share
@@ -177,6 +265,7 @@ class WebShareService {
         _downloadCounts[entry.key.id] = 0;
       }
     }
+    _pushFileListEvent(); // live update to all browsers
   }
 
   /// Remove a file from sharing
@@ -184,10 +273,9 @@ class WebShareService {
     _sharedFiles.removeWhere((f) => f.id == fileId);
     _filePaths.remove(fileId);
     _downloadCounts.remove(fileId);
-    
-    // Close progress stream if exists
     _downloadProgress[fileId]?.close();
     _downloadProgress.remove(fileId);
+    _pushFileListEvent();
   }
 
   /// Clear all shared files
@@ -195,11 +283,43 @@ class WebShareService {
     _sharedFiles.clear();
     _filePaths.clear();
     _downloadCounts.clear();
-    
     for (final controller in _downloadProgress.values) {
       controller.close();
     }
     _downloadProgress.clear();
+    _pushFileListEvent();
+  }
+
+  // ── SSE helpers ────────────────────────────────────────────────────────────
+
+  /// Push the current file list to all connected SSE clients.
+  void _pushFileListEvent() {
+    final list = _sharedFiles
+        .map(
+          (f) => {
+            'id': f.id,
+            'name': f.name,
+            'size': f.size,
+            'mimeType': f.mimeType,
+            'downloadCount': _downloadCounts[f.id] ?? 0,
+          },
+        )
+        .toList();
+    _pushSseEvent('files', jsonEncode(list));
+  }
+
+  /// Push a named SSE event to all connected browsers.
+  void _pushSseEvent(String event, String data) {
+    final payload = 'event: $event\ndata: $data\n\n';
+    final dead = <HttpResponse>[];
+    for (final client in _sseClients) {
+      try {
+        client.write(payload);
+      } catch (_) {
+        dead.add(client);
+      }
+    }
+    _sseClients.removeWhere(dead.contains);
   }
 
   /// Handle HTTP requests
@@ -210,7 +330,10 @@ class WebShareService {
     try {
       // CORS headers
       response.headers.add('Access-Control-Allow-Origin', '*');
-      response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      response.headers.add(
+        'Access-Control-Allow-Methods',
+        'GET, POST, OPTIONS',
+      );
       response.headers.add('Access-Control-Allow-Headers', 'Content-Type');
 
       if (request.method == 'OPTIONS') {
@@ -224,9 +347,17 @@ class WebShareService {
         await _serveIndexPage(response);
       } else if (path == '/api/files') {
         await _serveFileList(response);
+      } else if (path == '/api/events') {
+        await _serveSSE(request, response);
+      } else if (path == '/upload' && request.method == 'POST') {
+        await _handleUpload(request, response);
       } else if (path.startsWith('/download/')) {
         final fileId = path.substring('/download/'.length);
-        await _serveFileDownload(request, response, fileId);
+        if (fileId == 'all') {
+          await _serveZipDownload(request, response);
+        } else {
+          await _serveFileDownload(request, response, fileId);
+        }
       } else if (path == '/api/stats') {
         await _serveStats(response);
       } else {
@@ -242,431 +373,12 @@ class WebShareService {
     }
   }
 
-  /// Serve the main index page
+  /// Serve the main index page with improved Flux Design System UI
+  /// Serve the main index page � uses SSE for live updates and supports browser uploads.
   Future<void> _serveIndexPage(HttpResponse response) async {
     response.headers.contentType = ContentType.html;
     response.statusCode = HttpStatus.ok;
-
-    final html = '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Flux Share - Download Files</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
-            background: #ffffff;
-            min-height: 100vh;
-            padding: 24px;
-            color: #0f172a;
-        }
-        .container {
-            max-width: 720px;
-            margin: 0 auto;
-        }
-        .header {
-            text-align: center;
-            padding: 32px 20px 40px;
-        }
-        .logo {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 56px;
-            height: 56px;
-            background: linear-gradient(135deg, #6366f1 0%, #0ea5e9 100%);
-            border-radius: 16px;
-            margin-bottom: 20px;
-            box-shadow: 0 10px 25px -5px rgba(99, 102, 241, 0.4);
-        }
-        .logo-icon {
-            font-size: 28px;
-            filter: grayscale(1) brightness(2);
-        }
-        .header h1 {
-            font-size: 1.75rem;
-            font-weight: 700;
-            margin-bottom: 8px;
-            color: #0f172a;
-            letter-spacing: -0.025em;
-        }
-        .header p {
-            font-size: 1rem;
-            color: #64748b;
-            margin-bottom: 16px;
-        }
-        .connection-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            background: #f1f5f9;
-            padding: 8px 16px;
-            border-radius: 20px;
-            font-size: 0.875rem;
-            color: #475569;
-            font-weight: 500;
-        }
-        .status-dot {
-            width: 8px;
-            height: 8px;
-            background: #22c55e;
-            border-radius: 50%;
-            animation: pulse 2s infinite;
-        }
-        .card {
-            background: #ffffff;
-            border-radius: 24px;
-            padding: 24px;
-            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02), 0 10px 15px -3px rgba(0,0,0,0.05), 0 0 0 1px rgba(0,0,0,0.05);
-            margin-bottom: 24px;
-            border: 1px solid #f1f5f9;
-        }
-        .file-item {
-            background: white;
-            border-radius: 12px;
-            padding: 14px 16px;
-            margin-bottom: 10px;
-            display: flex;
-            align-items: center;
-            gap: 14px;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-            border: 1px solid #e2e8f0;
-            transition: all 0.2s ease;
-        }
-        .file-item:hover {
-            border-color: #6366f1;
-            box-shadow: 0 2px 8px rgba(99, 102, 241, 0.1);
-        }
-        .file-icon {
-            width: 44px;
-            height: 44px;
-            background: linear-gradient(135deg, #6366f1 0%, #0ea5e9 100%);
-            border-radius: 10px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-size: 20px;
-            flex-shrink: 0;
-            box-shadow: 0 2px 8px rgba(99, 102, 241, 0.2);
-        }
-        .file-info {
-            flex: 1;
-            min-width: 0;
-        }
-        .file-name {
-            font-weight: 600;
-            font-size: 0.9rem;
-            color: #1e293b;
-            margin-bottom: 2px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        .file-size {
-            color: #64748b;
-            font-size: 0.8rem;
-            font-weight: 500;
-        }
-        .download-btn {
-            background: #6366f1;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 8px;
-            font-weight: 600;
-            font-size: 0.85rem;
-            cursor: pointer;
-            text-decoration: none;
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            transition: all 0.2s ease;
-            flex-shrink: 0;
-        }
-        .download-btn:hover {
-            background: #4f46e5;
-            transform: translateY(-1px);
-        }
-        .download-btn:active {
-            transform: translateY(0);
-        }
-        .download-btn.downloading {
-            background: #f59e0b;
-            pointer-events: none;
-        }
-        .progress-bar {
-            width: 100%;
-            height: 3px;
-            background: #e2e8f0;
-            border-radius: 2px;
-            margin-top: 6px;
-            overflow: hidden;
-            display: none;
-        }
-        .progress-bar.active {
-            display: block;
-        }
-        .progress-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #6366f1 0%, #0ea5e9 100%);
-            border-radius: 2px;
-            transition: width 0.2s ease;
-        }
-        .download-count {
-            background: #f1f5f9;
-            color: #64748b;
-            font-size: 0.75rem;
-            padding: 4px 8px;
-            border-radius: 6px;
-            margin-left: 8px;
-            font-weight: 600;
-        }
-        .empty-state {
-            text-align: center;
-            padding: 48px 20px;
-            color: #64748b;
-        }
-        .empty-state-icon {
-            font-size: 48px;
-            margin-bottom: 16px;
-            opacity: 0.6;
-        }
-        .footer {
-            text-align: center;
-            padding: 24px;
-            color: #94a3b8;
-            font-size: 0.875rem;
-        }
-        .footer a {
-            color: #6366f1;
-            text-decoration: none;
-            font-weight: 500;
-        }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        @media (max-width: 640px) {
-            body { padding: 16px; }
-            .header { padding: 24px 16px 32px; }
-            .header h1 { font-size: 1.5rem; }
-            .card { padding: 16px; border-radius: 20px; }
-            .file-item { flex-wrap: wrap; gap: 12px; padding: 12px; }
-            .file-icon { width: 40px; height: 40px; font-size: 20px; }
-            .file-info { width: 100%; order: 3; }
-            .download-btn { width: 100%; justify-content: center; order: 2; }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <div class="logo">
-                <span class="logo-icon">⬆️</span>
-            </div>
-            <h1>Flux Share</h1>
-            <p>Download shared files directly to your device</p>
-            <div class="connection-badge">
-                <span class="status-dot"></span>
-                <span>${_sharedFiles.length} file(s) available</span>
-            </div>
-        </div>
-        
-        <div class="card" id="fileList">
-            ${_sharedFiles.isEmpty 
-              ? '''<div class="empty-state">
-                    <div class="empty-state-icon">📂</div>
-                    <p>No files shared yet</p>
-                 </div>'''
-              : _sharedFiles.map((f) => '''<div class="file-item" id="file-${f.id}">
-                    <div class="file-icon">${_getFileIconHtml(f.name)}</div>
-                    <div class="file-info">
-                        <div class="file-name">${f.name}</div>
-                        <div class="file-size">${_formatSizeHtml(f.size)}</div>
-                        <div class="progress-bar" id="progress-${f.id}">
-                            <div class="progress-fill" style="width: 0%"></div>
-                        </div>
-                    </div>
-                    <a href="/download/${f.id}" 
-                       class="download-btn"
-                       id="btn-${f.id}"
-                       onclick="startDownload('${f.id}', event)">
-                        ⬇️
-                    </a>
-                    ${_downloadCounts[f.id] != null && _downloadCounts[f.id]! > 0 
-                      ? '<span class="download-count">${_downloadCounts[f.id]}</span>'
-                      : ''}
-                </div>''').join('')}
-        </div>
-        
-        <div class="footer">
-            <p>Powered by <a href="#">Flux</a> • Secure local file sharing</p>
-        </div>
-    </div>
-
-    <script>
-        let files = [];
-        let downloadProgress = {};
-
-        async function loadFiles() {
-            try {
-                const response = await fetch('/api/files');
-                files = await response.json();
-                renderFiles();
-            } catch (error) {
-                console.error('Failed to load files:', error);
-                document.getElementById('fileList').innerHTML = `
-                    <div class="empty-state">
-                        <div class="empty-state-icon">⚠️</div>
-                        <p>Failed to load files. Please refresh the page.</p>
-                    </div>
-                `;
-            }
-        }
-
-        function formatSize(bytes) {
-            if (bytes === 0) return '0 B';
-            const k = 1024;
-            const sizes = ['B', 'KB', 'MB', 'GB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-        }
-
-        function getFileIcon(name) {
-            const ext = name.split('.').pop().toLowerCase();
-            const icons = {
-                'jpg': '🖼️', 'jpeg': '🖼️', 'png': '🖼️', 'gif': '🖼️',
-                'mp4': '🎬', 'mov': '🎬', 'avi': '🎬',
-                'mp3': '🎵', 'wav': '🎵', 'flac': '🎵',
-                'pdf': '📄', 'doc': '📝', 'docx': '📝', 'txt': '📝',
-                'zip': '📦', 'rar': '📦', '7z': '📦',
-                'apk': '📱', 'exe': '💻'
-            };
-            return icons[ext] || '📄';
-        }
-
-        function renderFiles() {
-            const container = document.getElementById('fileList');
-            
-            if (files.length === 0) {
-                container.innerHTML = `
-                    <div class="empty-state">
-                        <div class="empty-state-icon">📂</div>
-                        <p>No files available for download</p>
-                    </div>
-                `;
-                return;
-            }
-
-            container.innerHTML = files.map(file => '' +
-                '<div class="file-item" id="file-' + file.id + '">' +
-                    '<div class="file-icon">' + getFileIcon(file.name) + '</div>' +
-                    '<div class="file-info">' +
-                        '<div class="file-name">' + file.name + '</div>' +
-                        '<div class="file-size">' + formatSize(file.size) + '</div>' +
-                        '<div class="progress-bar ' + (downloadProgress[file.id] ? 'active' : '') + '" id="progress-' + file.id + '">' +
-                            '<div class="progress-fill" style="width: ' + ((downloadProgress[file.id] || 0) * 100) + '%"></div>' +
-                        '</div>' +
-                    '</div>' +
-                    '<a href="/download/' + file.id + '" ' +
-                       'class="download-btn ' + (downloadProgress[file.id] ? 'downloading' : '') + '" ' +
-                       'onclick="startDownload(\'' + file.id + '\', event)">' +
-                        (downloadProgress[file.id] ? '⏳' : '⬇️') +
-                    '</a>' +
-                    (file.downloadCount > 0 ? '<span class="download-count">' + file.downloadCount + '</span>' : '') +
-                '</div>'
-            ).join('');
-        }
-
-        async function startDownload(fileId, event) {
-            event.preventDefault();
-            
-            if (downloadProgress[fileId]) return;
-            
-            downloadProgress[fileId] = 0;
-            updateDownloadUI(fileId);
-            
-            try {
-                const response = await fetch('/download/' + fileId);
-                const contentLength = response.headers.get('Content-Length');
-                const reader = response.body.getReader();
-                
-                let receivedLength = 0;
-                const chunks = [];
-                
-                while(true) {
-                    const {done, value} = await reader.read();
-                    
-                    if (done) break;
-                    
-                    chunks.push(value);
-                    receivedLength += value.length;
-                    
-                    if (contentLength) {
-                        downloadProgress[fileId] = receivedLength / parseInt(contentLength);
-                        updateDownloadUI(fileId);
-                    }
-                }
-                
-                // Combine chunks and download
-                const blob = new Blob(chunks);
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = files.find(f => f.id === fileId)?.name || 'download';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-                
-                // Clear progress after delay
-                setTimeout(() => {
-                    delete downloadProgress[fileId];
-                    updateDownloadUI(fileId);
-                    loadFiles(); // Refresh to update download count
-                }, 1000);
-                
-            } catch (error) {
-                console.error('Download failed:', error);
-                alert('Download failed. Please try again.');
-                delete downloadProgress[fileId];
-                updateDownloadUI(fileId);
-            }
-        }
-
-        function updateDownloadUI(fileId) {
-            const btn = document.querySelector('#file-' + fileId + ' .download-btn');
-            const progressBar = document.getElementById('progress-' + fileId);
-            const progressFill = progressBar?.querySelector('.progress-fill');
-            
-            if (btn) {
-                if (downloadProgress[fileId]) {
-                    btn.classList.add('downloading');
-                    btn.textContent = '⏳';
-                    progressBar?.classList.add('active');
-                    if (progressFill) {
-                        progressFill.style.width = (downloadProgress[fileId] * 100) + '%';
-                    }
-                } else {
-                    btn.classList.remove('downloading');
-                    btn.textContent = '⬇️';
-                    progressBar?.classList.remove('active');
-                }
-            }
-        }
-
-        // Load files on page load and refresh every 5 seconds
-        loadFiles();
-        setInterval(loadFiles, 5000);
-    </script>
-</body>
-</html>
-''';
-    response.write(html);
+    response.write(webShareHtml);
     await response.close();
   }
 
@@ -690,15 +402,313 @@ class WebShareService {
     await response.close();
   }
 
-  /// Serve file download with concurrent session tracking
-  /// Supports multiple users downloading the same file simultaneously
-  Future<void> _serveFileDownload(HttpRequest request, HttpResponse response, String fileId) async {
+  /// Server-Sent Events endpoint — keeps the connection open and pushes
+  /// file list changes to the browser in real-time (no polling needed).
+  Future<void> _serveSSE(HttpRequest request, HttpResponse response) async {
+    response.headers.set('Content-Type', 'text/event-stream');
+    response.headers.set('Cache-Control', 'no-cache');
+    response.headers.set('Connection', 'keep-alive');
+    response.headers.set('Access-Control-Allow-Origin', '*');
+    response.statusCode = HttpStatus.ok;
+
+    // Register this client
+    _sseClients.add(response);
+
+    // Send current file list immediately on connect
+    final list = _sharedFiles
+        .map(
+          (f) => {
+            'id': f.id,
+            'name': f.name,
+            'size': f.size,
+            'mimeType': f.mimeType,
+            'downloadCount': _downloadCounts[f.id] ?? 0,
+          },
+        )
+        .toList();
+    response.write('event: files\ndata: ${jsonEncode(list)}\n\n');
+    response.write(
+      'event: settings\ndata: ${jsonEncode({'receiveEnabled': _receiveEnabled})}\n\n',
+    );
+
+    // Keep alive with a heartbeat every 15 seconds
+    final heartbeat = Timer.periodic(const Duration(seconds: 15), (_) {
+      try {
+        response.write(': heartbeat\n\n');
+      } catch (_) {}
+    });
+
+    // Wait until the client disconnects
+    try {
+      await response.done;
+    } catch (_) {}
+
+    heartbeat.cancel();
+    _sseClients.remove(response);
+  }
+
+  /// Handle multipart file upload from the browser.
+  Future<void> _handleUpload(HttpRequest request, HttpResponse response) async {
+    if (!_receiveEnabled) {
+      response.statusCode = HttpStatus.forbidden;
+      response.write(jsonEncode({'error': 'File receiving is disabled'}));
+      await response.close();
+      return;
+    }
+
+    try {
+      final contentType = request.headers.contentType;
+      if (contentType == null || !contentType.mimeType.contains('multipart')) {
+        response.statusCode = HttpStatus.badRequest;
+        response.write(jsonEncode({'error': 'Expected multipart/form-data'}));
+        await response.close();
+        return;
+      }
+
+      final boundary = contentType.parameters['boundary'];
+      if (boundary == null) {
+        response.statusCode = HttpStatus.badRequest;
+        response.write(jsonEncode({'error': 'Missing boundary'}));
+        await response.close();
+        return;
+      }
+
+      // Determine save folder
+      final saveDir = _receiveFolder ?? await _getDefaultDownloadFolder();
+      await Directory(saveDir).create(recursive: true);
+
+      // Parse multipart body
+      final bodyBytes = await request.fold<List<int>>(
+        [],
+        (acc, chunk) => acc..addAll(chunk),
+      );
+
+      final savedFiles = <String>[];
+      final parts = _parseMultipart(bodyBytes, boundary);
+
+      for (final part in parts) {
+        final filename = part['filename'];
+        final data = part['data'] as List<int>?;
+        if (filename == null || data == null || data.isEmpty) continue;
+
+        final safeName = filename.replaceAll(RegExp(r'[/\\:*?"<>|]'), '_');
+        final savePath = '$saveDir${Platform.pathSeparator}$safeName';
+        await File(savePath).writeAsBytes(data);
+        savedFiles.add(safeName);
+
+        AppLogger.info('Received file via web upload: $savePath');
+        onFileReceived?.call(savePath, safeName);
+      }
+
+      response.headers.contentType = ContentType.json;
+      response.statusCode = HttpStatus.ok;
+      response.write(
+        jsonEncode({
+          'success': true,
+          'files': savedFiles,
+          'count': savedFiles.length,
+        }),
+      );
+      await response.close();
+    } catch (e) {
+      AppLogger.error('Upload failed', e);
+      response.statusCode = HttpStatus.internalServerError;
+      response.write(jsonEncode({'error': 'Upload failed: $e'}));
+      await response.close();
+    }
+  }
+
+  /// Minimal multipart/form-data parser.
+  /// Returns a list of maps with 'filename' and 'data' keys.
+  List<Map<String, dynamic>> _parseMultipart(List<int> body, String boundary) {
+    final parts = <Map<String, dynamic>>[];
+    final boundaryBytes = '--$boundary'.codeUnits;
+    final bodyStr = String.fromCharCodes(body);
+    final sections = bodyStr.split('--$boundary');
+
+    for (final section in sections) {
+      if (section.trim().isEmpty || section.trim() == '--') continue;
+
+      final headerBodySplit = section.indexOf('\r\n\r\n');
+      if (headerBodySplit == -1) continue;
+
+      final headers = section.substring(0, headerBodySplit);
+      final rawBody = section.substring(headerBodySplit + 4);
+      // Strip trailing \r\n
+      final bodyContent = rawBody.endsWith('\r\n')
+          ? rawBody.substring(0, rawBody.length - 2)
+          : rawBody;
+
+      // Extract filename from Content-Disposition
+      final filenameMatch = RegExp(r'filename="([^"]+)"').firstMatch(headers);
+      if (filenameMatch == null) continue;
+
+      final filename = filenameMatch.group(1)!;
+      parts.add({'filename': filename, 'data': bodyContent.codeUnits});
+    }
+
+    // Use raw bytes for binary files — re-parse with proper byte handling
+    final result = <Map<String, dynamic>>[];
+    int pos = 0;
+
+    while (pos < body.length) {
+      // Find next boundary
+      final bStart = _indexOfSeq(body, boundaryBytes, pos);
+      if (bStart == -1) break;
+      pos = bStart + boundaryBytes.length;
+
+      // Skip \r\n after boundary
+      if (pos + 1 < body.length && body[pos] == 13 && body[pos + 1] == 10) {
+        pos += 2;
+      } else if (pos + 1 < body.length &&
+          body[pos] == 45 &&
+          body[pos + 1] == 45) {
+        break; // final boundary --
+      }
+
+      // Find end of headers (\r\n\r\n)
+      final headerEnd = _indexOfSeq(body, [13, 10, 13, 10], pos);
+      if (headerEnd == -1) break;
+
+      final headerBytes = body.sublist(pos, headerEnd);
+      final headerStr = utf8.decode(headerBytes, allowMalformed: true);
+      pos = headerEnd + 4;
+
+      final fnMatch = RegExp(r'filename="([^"]+)"').firstMatch(headerStr);
+      if (fnMatch == null) continue;
+      final filename = fnMatch.group(1)!;
+
+      // Find next boundary to get data end
+      final nextBoundary = _indexOfSeq(body, [13, 10, ...boundaryBytes], pos);
+      final dataEnd = nextBoundary == -1 ? body.length : nextBoundary;
+      final data = body.sublist(pos, dataEnd);
+
+      result.add({'filename': filename, 'data': data});
+      if (nextBoundary == -1) break;
+      pos = nextBoundary;
+    }
+
+    return result.isNotEmpty ? result : parts;
+  }
+
+  int _indexOfSeq(List<int> haystack, List<int> needle, int start) {
+    outer:
+    for (int i = start; i <= haystack.length - needle.length; i++) {
+      for (int j = 0; j < needle.length; j++) {
+        if (haystack[i + j] != needle[j]) continue outer;
+      }
+      return i;
+    }
+    return -1;
+  }
+
+  Future<String> _getDefaultDownloadFolder() async {
+    if (Platform.isAndroid) {
+      return '/storage/emulated/0/Download/FluxShare';
+    } else if (Platform.isWindows) {
+      return '${Platform.environment['USERPROFILE']}\\Downloads\\FluxShare';
+    } else {
+      return '${Platform.environment['HOME']}/Downloads/FluxShare';
+    }
+  }
+
+  /// Serve zip download of all files
+  /// Avoids popup blockers by providing single download for all files
+  Future<void> _serveZipDownload(
+    HttpRequest request,
+    HttpResponse response,
+  ) async {
     final clientIp = request.connectionInfo?.remoteAddress.address ?? 'unknown';
-    
+
+    if (_sharedFiles.isEmpty) {
+      response.statusCode = HttpStatus.notFound;
+      response.write('No files available for download');
+      await response.close();
+      return;
+    }
+
     // Check if we've hit the concurrent download limit
     if (_activeClients.length >= _maxConcurrentDownloads) {
       response.statusCode = HttpStatus.serviceUnavailable;
-      response.write('Server busy. Too many concurrent downloads. Please try again in a moment.');
+      response.write(
+        'Server busy. Too many concurrent downloads. Please try again in a moment.',
+      );
+      await response.close();
+      return;
+    }
+
+    // Track this client
+    final clientKey = '$clientIp:zip';
+    _activeClients.add(clientKey);
+
+    try {
+      // Stream each file into the zip — never load entire files into memory.
+      // We use ZipEncoder.startEncode / addFile(stream) so only one 256 KB
+      // chunk is in memory at a time regardless of how many / how large the
+      // files are.
+      response.headers.contentType = ContentType.parse('application/zip');
+      response.headers.set(
+        'Content-Disposition',
+        'attachment; filename="flux-files.zip"',
+      );
+      response.headers.set('Cache-Control', 'no-cache');
+      // Content-Length is omitted intentionally — we don't know the
+      // compressed size upfront when streaming.
+      response.statusCode = HttpStatus.ok;
+
+      final encoder = ZipEncoder();
+      // OutputStreamBase that writes directly to the HTTP response.
+      final outputStream = _ResponseOutputStream(response);
+      encoder.startEncode(outputStream);
+
+      for (final file in _sharedFiles) {
+        final filePath = _filePaths[file.id];
+        if (filePath == null || !await File(filePath).exists()) continue;
+
+        final fileBytes = await File(filePath).readAsBytes();
+        // ArchiveFile(name, size, Uint8List) — ZipEncoder streams through
+        // _ResponseOutputStream so the full zip is never buffered in memory.
+        final archiveFile = ArchiveFile(file.name, fileBytes.length, fileBytes);
+        encoder.addFile(archiveFile);
+      }
+
+      encoder.endEncode();
+      await response.flush();
+
+      // Increment download counts for all files
+      for (final file in _sharedFiles) {
+        _downloadCounts[file.id] = (_downloadCounts[file.id] ?? 0) + 1;
+      }
+
+      AppLogger.info(
+        'Zip download complete for client $clientIp (${_sharedFiles.length} files)',
+      );
+      await response.close();
+    } catch (e) {
+      AppLogger.error('Error serving zip download', e);
+      response.statusCode = HttpStatus.internalServerError;
+      response.write('Failed to create zip archive');
+      await response.close();
+    } finally {
+      _activeClients.remove(clientKey);
+    }
+  }
+
+  /// Serve file download with concurrent session tracking
+  /// Supports multiple users downloading the same file simultaneously
+  Future<void> _serveFileDownload(
+    HttpRequest request,
+    HttpResponse response,
+    String fileId,
+  ) async {
+    final clientIp = request.connectionInfo?.remoteAddress.address ?? 'unknown';
+
+    // Check if we've hit the concurrent download limit
+    if (_activeClients.length >= _maxConcurrentDownloads) {
+      response.statusCode = HttpStatus.serviceUnavailable;
+      response.write(
+        'Server busy. Too many concurrent downloads. Please try again in a moment.',
+      );
       await response.close();
       return;
     }
@@ -721,10 +731,7 @@ class WebShareService {
     _activeClients.add(clientKey);
 
     // Create download session
-    final session = _DownloadSession(
-      fileId: fileId,
-      clientIp: clientIp,
-    );
+    final session = _DownloadSession(fileId: fileId, clientIp: clientIp);
     _activeDownloads[fileId]?.add(session);
 
     // Increment download count
@@ -752,17 +759,23 @@ class WebShareService {
     // Set headers
     final mimeType = lookupMimeType(file.name) ?? 'application/octet-stream';
     response.headers.contentType = ContentType.parse(mimeType);
-    response.headers.set('Content-Disposition', 'attachment; filename="${file.name}"');
+    response.headers.set(
+      'Content-Disposition',
+      'attachment; filename="${file.name}"',
+    );
     response.headers.set('Accept-Ranges', 'bytes');
     response.headers.set('Cache-Control', 'no-cache');
-    
+
     if (isPartial) {
       response.statusCode = HttpStatus.partialContent;
-      response.headers.set('Content-Range', 'bytes $startByte-$endByte/${file.size}');
+      response.headers.set(
+        'Content-Range',
+        'bytes $startByte-$endByte/${file.size}',
+      );
     } else {
       response.statusCode = HttpStatus.ok;
     }
-    
+
     response.headers.set('Content-Length', '$contentLength');
 
     try {
@@ -773,33 +786,38 @@ class WebShareService {
       }
 
       int sentBytes = 0;
-      final bufferSize = 256 * 1024; // 256KB chunks for faster concurrent downloads
-      
+      final bufferSize =
+          256 * 1024; // 256KB chunks for faster concurrent downloads
+
       while (sentBytes < contentLength) {
         final remainingBytes = contentLength - sentBytes;
-        final chunkSize = remainingBytes < bufferSize ? remainingBytes : bufferSize;
-        
+        final chunkSize = remainingBytes < bufferSize
+            ? remainingBytes
+            : bufferSize;
+
         final chunk = fileHandle.readSync(chunkSize);
         if (chunk.isEmpty) break;
-        
+
         response.add(chunk);
         sentBytes += chunk.length;
         session.bytesSent = sentBytes;
-        
+
         // Update progress periodically
         if (sentBytes % (512 * 1024) == 0 || sentBytes >= contentLength) {
           final progress = sentBytes / contentLength;
           _downloadProgress[fileId]?.add(progress);
         }
-        
+
         // Flush to send data immediately for better concurrent streaming
         await response.flush();
       }
 
       fileHandle.closeSync();
       session.isComplete = true;
-      
-      AppLogger.info('File download complete: ${file.name} for client $clientIp (${sentBytes} bytes)');
+
+      AppLogger.info(
+        'File download complete: $file.name for client $clientIp ($sentBytes bytes)',
+      );
     } catch (e) {
       AppLogger.error('Error serving file download', e);
     } finally {
@@ -818,7 +836,8 @@ class WebShareService {
   int get totalActiveDownloads => _activeClients.length;
 
   /// Check if server has capacity for more downloads
-  bool get hasDownloadCapacity => _activeClients.length < _maxConcurrentDownloads;
+  bool get hasDownloadCapacity =>
+      _activeClients.length < _maxConcurrentDownloads;
 
   /// Serve stats endpoint
   Future<void> _serveStats(HttpResponse response) async {
@@ -841,31 +860,14 @@ class WebShareService {
     return _downloadProgress[fileId]!.stream;
   }
 
-  /// Get file icon emoji based on extension
-  String _getFileIconHtml(String fileName) {
-    final ext = fileName.split('.').last.toLowerCase();
-    final icons = {
-      'jpg': '🖼️', 'jpeg': '🖼️', 'png': '🖼️', 'gif': '🖼️',
-      'mp4': '🎬', 'mov': '🎬', 'avi': '🎬',
-      'mp3': '🎵', 'wav': '🎵', 'flac': '🎵',
-      'pdf': '📄', 'doc': '📝', 'docx': '📝', 'txt': '📝',
-      'zip': '📦', 'rar': '📦', '7z': '📦',
-      'apk': '📱', 'exe': '💻',
-    };
-    return icons[ext] ?? '📄';
-  }
-
-  /// Format file size for HTML display
-  String _formatSizeHtml(int bytes) {
-    if (bytes <= 0) return '0 B';
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
-    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
-  }
-
-  /// Get server address
+  /// Get server address (raw IP URL)
   String? get serverAddress => _serverAddress;
+
+  /// Get mDNS URL (e.g. http://flux.local:8080), null if mDNS unavailable
+  String? get mdnsUrl => _mdnsUrl;
+
+  /// Best URL to show the user — always flux.local:8080
+  String? get bestUrl => _mdnsUrl ?? _serverAddress;
 
   /// Get server port
   int? get serverPort => _serverPort;
@@ -878,4 +880,70 @@ class WebShareService {
 
   /// Get total download count
   int get totalDownloads => _downloadCounts.values.fold(0, (a, b) => a + b);
+}
+
+/// Bridges the `archive` package's [OutputStreamBase] to a Dart [HttpResponse].
+/// This lets [ZipEncoder] write compressed bytes directly into the HTTP
+/// response stream without ever buffering the full zip in memory.
+class _ResponseOutputStream extends OutputStreamBase {
+  final HttpResponse _response;
+  int _bytesWritten = 0;
+
+  _ResponseOutputStream(this._response);
+
+  @override
+  int get length => _bytesWritten;
+
+  @override
+  void writeByte(int value) {
+    _response.add([value]);
+    _bytesWritten++;
+  }
+
+  @override
+  void writeBytes(List<int> bytes, [int? length]) {
+    final data = length != null ? bytes.sublist(0, length) : bytes;
+    _response.add(data);
+    _bytesWritten += data.length;
+  }
+
+  @override
+  void writeInputStream(InputStreamBase stream) {
+    while (!stream.isEOS) {
+      final bytes = stream.readBytes(65536); // 64 KB at a time
+      _response.add(bytes.toUint8List());
+      _bytesWritten += bytes.length;
+    }
+  }
+
+  @override
+  void flush() {
+    // HttpResponse buffers internally; flushing is done after endEncode().
+  }
+
+  @override
+  void writeUint16(int value) {
+    _response.add([value & 0xFF, (value >> 8) & 0xFF]);
+    _bytesWritten += 2;
+  }
+
+  @override
+  void writeUint32(int value) {
+    _response.add([
+      value & 0xFF,
+      (value >> 8) & 0xFF,
+      (value >> 16) & 0xFF,
+      (value >> 24) & 0xFF,
+    ]);
+    _bytesWritten += 4;
+  }
+
+  @override
+  void writeUint64(int value) {
+    // Write as two 32-bit little-endian words.
+    final lo = value & 0xFFFFFFFF;
+    final hi = (value >> 32) & 0xFFFFFFFF;
+    writeUint32(lo);
+    writeUint32(hi);
+  }
 }

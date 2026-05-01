@@ -1,0 +1,62 @@
+Please analyze the following Dart codebase for a Flutter app handling peer-to-peer file transfers using TCP sockets, Bluetooth for discovery, and WiFi Hotspots.
+
+Specifically, I want your analysis on the "Hotspot Handshake" logic. If two devices are not on the same network, the sender enables a hotspot. Does the current code properly facilitate the receiver connecting to that hotspot? Please review the `connectToPeer` and `_connectViaHotspot` methods, and provide an improvement score out of 10 for the networking architecture.
+
+Here is the relevant code from `lib/services/peer_discovery_service.dart`:
+
+```dart
+  Future<Device?> connectToPeer(ConnectionInfo peerInfo, {BluetoothService? bluetoothService}) async {
+    try {
+      // ... (Same network checking via Bluetooth and SSID) ...
+      if (onSameNetwork) {
+        return await _connectViaWifi(peerInfo);
+      } else {
+        return await _connectViaHotspot(peerInfo);
+      }
+    } catch (e) {
+      return null;
+    }
+  }
+
+  Future<Device?> _connectViaHotspot(ConnectionInfo peerInfo) async {
+    try {
+      // Enable hotspot on sender side
+      final hotspotResult = await _hotspotService.enableHotspot();
+      if (!hotspotResult) {
+        throw Exception('Failed to enable hotspot');
+      }
+      
+      // Wait for hotspot to be ready
+      await Future.delayed(const Duration(seconds: 3));
+      
+      final hotspotIp = await _networkManager.getLocalIpAddress();
+      
+      // In hotspot mode, the sender becomes the access point
+      // The receiver should connect to the sender's hotspot IP
+      // For now, we'll update the peerInfo to use the hotspot IP
+      // The actual connection will be established when the receiver connects
+      // This is a simplified fix - proper implementation would require
+      // the receiver to actively connect to the sender's hotspot
+      
+      final device = Device(
+        id: peerInfo.code,
+        name: peerInfo.deviceName,
+        ipAddress: hotspotIp, 
+        port: peerInfo.port,
+        type: DeviceType.mobile,
+        connectionType: ConnectionType.wifi,
+        discoveredAt: DateTime.now(),
+        isConnected: true,
+      );
+      
+      _discoveredPeers[device.id] = device;
+      _peerDiscoveredController.add(device);
+      
+      return device;
+    } catch (e) {
+      return null;
+    }
+  }
+```
+
+What are your thoughts on this approach, and how can it be fixed?

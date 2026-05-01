@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_selector/file_selector.dart';
@@ -256,7 +256,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Widget _buildAboutTile(BuildContext context) {
     return ListTile(
-      title: const Text('About Flux'),
+      title: const Text('About Flux Share'),
       subtitle: const Text('Fast, secure file sharing'),
       trailing: const Icon(Icons.info),
       onTap: () => _showAboutDialog(context),
@@ -284,6 +284,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       if (directory != null) {
         await ref.read(settingsProvider.notifier).updateDownloadDirectory(directory);
         if (mounted) {
+          // ignore: use_build_context_synchronously
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Download directory set to: $directory')),
           );
@@ -292,6 +293,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     } catch (e) {
       AppLogger.error('Failed to select directory', e);
       if (mounted) {
+        // ignore: use_build_context_synchronously
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Failed to select directory: $e')),
         );
@@ -332,9 +334,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   void _showAboutDialog(BuildContext context) {
     showAboutDialog(
       context: context,
-      applicationName: 'Flux',
+      applicationName: 'Flux Share',
       applicationVersion: '1.0.0',
-      applicationLegalese: '© 2024 Flux. All rights reserved.',
+      applicationLegalese: '© 2024 Flux Share. All rights reserved.',
       children: [
         const SizedBox(height: 16),
         const Text('Fast, secure, and easy file sharing between devices.'),

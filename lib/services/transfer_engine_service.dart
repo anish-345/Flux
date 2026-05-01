@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flux/models/file_metadata.dart';
 import 'package:flux/models/device.dart';
@@ -25,22 +24,30 @@ class TransferEngineService {
     _networkService = NetworkTransferService(_ref);
   }
 
+  /// Expose NetworkTransferService for connection notifications
+  NetworkTransferService get networkService => _networkService;
+
   /// Start server to receive files
   Future<int> startReceiving() async {
     try {
+      AppLogger.info('🔧 Starting transfer engine server...');
+      
       // Ensure network is available
       final networkResult = await _networkManager.ensureNetworkConnection();
+      AppLogger.info('🌐 Network check result: ${networkResult['success']}');
+      
       if (!networkResult['success']) {
         throw Exception('No network connection available');
       }
 
       // Start transfer server with dynamic port
+      AppLogger.info('🚀 Starting NetworkTransferService server...');
       final port = await _networkService.startServer();
       
-      AppLogger.info('Ready to receive files on port $port');
+      AppLogger.info('✅ Transfer engine server ready to receive files on port $port');
       return port;
     } catch (e) {
-      AppLogger.error('Failed to start receiving', e);
+      AppLogger.error('❌ Failed to start receiving server', e);
       rethrow;
     }
   }
@@ -51,6 +58,7 @@ class TransferEngineService {
   }
 
   /// Send files to a device
+  /// Uses "best effort" mode - continues on individual file failures
   Future<void> sendFiles(
     Device targetDevice,
     List<MapEntry<FileMetadata, String>> files, {
@@ -66,6 +74,9 @@ class TransferEngineService {
       AppLogger.info('Starting transfer of ${files.length} files to ${targetDevice.name}');
 
       int currentFile = 1;
+      int successCount = 0;
+      int failureCount = 0;
+
       for (final entry in files) {
         final file = entry.key;
         final filePath = entry.value;
@@ -84,7 +95,7 @@ class TransferEngineService {
         );
         _ref.read(transferHistoryProvider.notifier).addTransfer(transfer);
 
-        AppLogger.info('Sending file ${currentFile}/${files.length}: ${file.name}');
+        AppLogger.info('Sending file $currentFile/$files.length: $file.name');
 
         try {
           await _networkService.sendFile(
@@ -110,9 +121,10 @@ class TransferEngineService {
           );
           _ref.read(transferHistoryProvider.notifier).addTransfer(completedTransfer);
 
+          successCount++;
           AppLogger.info('File sent successfully: ${file.name}');
         } catch (e) {
-          // Update history as failed
+          // Update history as failed but continue to next file
           final failedTransfer = TransferHistory(
             id: transferId,
             deviceId: targetDevice.id,
@@ -125,14 +137,20 @@ class TransferEngineService {
             error: e.toString(),
           );
           _ref.read(transferHistoryProvider.notifier).addTransfer(failedTransfer);
-          AppLogger.error('Failed to send file: ${file.name}', e);
-          rethrow;
+          failureCount++;
+          AppLogger.error('Failed to send file: ${file.name} (continuing with next file)', e);
+          // Continue to next file instead of rethrowing
         }
 
         currentFile++;
       }
 
-      AppLogger.info('All files sent successfully');
+      AppLogger.info('Batch transfer complete: $successCount succeeded, $failureCount failed');
+      
+      // Only throw if all files failed
+      if (failureCount == files.length && files.isNotEmpty) {
+        throw Exception('All files failed to transfer');
+      }
     } catch (e) {
       AppLogger.error('File transfer failed', e);
       rethrow;

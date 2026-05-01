@@ -1,3 +1,7 @@
+// This module is intentionally excluded from flutter_rust_bridge code generation.
+// It provides internal Rust networking primitives used by other Rust modules.
+#![allow(dead_code)]
+
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
@@ -10,6 +14,7 @@ const INITIAL_RETRY_DELAY_MS: u64 = 100;
 const MAX_RETRY_DELAY_MS: u64 = 5000;
 
 /// Network socket wrapper for TCP communication with retry mechanisms
+#[flutter_rust_bridge::frb(ignore)]
 pub struct NetworkSocket {
     stream: Option<TcpStream>,
     address: String,
@@ -19,6 +24,7 @@ pub struct NetworkSocket {
 
 /// Retry configuration
 #[derive(Debug, Clone)]
+#[flutter_rust_bridge::frb(ignore)]
 pub struct RetryConfig {
     pub max_attempts: u32,
     pub initial_delay_ms: u64,
@@ -85,16 +91,15 @@ impl NetworkSocket {
 
     /// Send data through the socket with retry mechanism
     pub fn send(&mut self, data: Vec<u8>) -> Result<(), String> {
-        if self.stream.is_none() {
-            return Err("Socket not connected".to_string());
-        }
+        let stream = self.stream.as_mut()
+            .ok_or_else(|| "Socket not connected".to_string())?;
 
         let retry_config = self.retry_config.clone();
         let mut attempt = 0;
         let mut delay_ms = retry_config.initial_delay_ms;
 
         loop {
-            match self.stream.as_mut().unwrap().write_all(&data) {
+            match stream.write_all(&data) {
                 Ok(()) => return Ok(()),
                 Err(error) => {
                     attempt += 1;
@@ -134,9 +139,8 @@ impl NetworkSocket {
 
     /// Receive data from the socket with retry mechanism
     pub fn receive(&mut self, buffer_size: usize) -> Result<Vec<u8>, String> {
-        if self.stream.is_none() {
-            return Err("Socket not connected".to_string());
-        }
+        let stream = self.stream.as_mut()
+            .ok_or_else(|| "Socket not connected".to_string())?;
 
         let retry_config = self.retry_config.clone();
         let mut attempt = 0;
@@ -144,7 +148,7 @@ impl NetworkSocket {
 
         loop {
             let mut buffer = vec![0u8; buffer_size];
-            match self.stream.as_mut().unwrap().read(&mut buffer) {
+            match stream.read(&mut buffer) {
                 Ok(n) => {
                     buffer.truncate(n);
                     return Ok(buffer);
@@ -227,6 +231,7 @@ impl NetworkSocket {
 }
 
 /// TCP Server for accepting connections with retry mechanisms
+#[flutter_rust_bridge::frb(ignore)]
 pub struct TcpServer {
     listener: Option<TcpListener>,
     port: u16,
@@ -324,12 +329,12 @@ impl TcpServer {
 }
 
 /// Network utilities
-pub struct NetworkUtils;
+pub struct NetworkUtils {}
 
 impl NetworkUtils {
     /// Check if a port is available
     pub fn is_port_available(port: u16) -> bool {
-        TcpListener::bind(format!("0.0.0.0:{}", port)).is_ok()
+        std::net::TcpListener::bind(format!("0.0.0.0:{}", port)).is_ok()
     }
 
     /// Find an available port starting from the given port

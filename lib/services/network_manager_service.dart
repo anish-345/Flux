@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:network_info_plus/network_info_plus.dart';
@@ -180,7 +179,7 @@ class NetworkManagerService {
         if (isHotspotActive) {
           _networkInfo = {
             'type': 'hotspot_host',
-            'ssid': await _hotspotService.getHotspotSSID(),
+            'ssid': _hotspotService.getHotspotSSID(),
             'ipAddress': await _networkInfoService.getWifiIP(),
             'isConnected': true,
           };
@@ -366,7 +365,7 @@ class NetworkManagerService {
       
       for (final interface in interfaces) {
         for (final addr in interface.addresses) {
-          if (!addr.isLoopback && addr.address.startsWith('192.168.')) {
+          if (!addr.isLoopback && _isPrivateIp(addr.address)) {
             return addr.address;
           }
         }
@@ -377,6 +376,29 @@ class NetworkManagerService {
       AppLogger.error('Failed to get local IP', e);
       return null;
     }
+  }
+
+  /// Check if an IP address is in a private range
+  /// Supports: 192.168.x.x, 10.x.x.x, 172.16-31.x.x
+  bool _isPrivateIp(String ip) {
+    // 192.168.0.0/16
+    if (ip.startsWith('192.168.')) return true;
+    
+    // 10.0.0.0/8
+    if (ip.startsWith('10.')) return true;
+    
+    // 172.16.0.0/12 (172.16.0.0 to 172.31.255.255)
+    if (ip.startsWith('172.')) {
+      final parts = ip.split('.');
+      if (parts.length >= 2) {
+        final secondOctet = int.tryParse(parts[1]);
+        if (secondOctet != null && secondOctet >= 16 && secondOctet <= 31) {
+          return true;
+        }
+      }
+    }
+    
+    return false;
   }
 
   /// Wait for network connection

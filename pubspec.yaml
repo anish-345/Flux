@@ -1,5 +1,5 @@
 name: flux
-description: "A new Flutter project."
+description: "Flux Share - Fast P2P file sharing app"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -34,7 +34,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   rust_lib_flux:
     path: rust_builder
-  flutter_rust_bridge: 2.11.1
+  flutter_rust_bridge: 2.12.0
 
   # Networking & P2P
   connectivity_plus: ^5.0.0
@@ -46,12 +46,14 @@ dependencies:
   flutter_blue_plus: ^1.31.0
   network_info_plus: ^4.0.0
   permission_handler: ^11.4.0
+  wifi_iot: ^0.3.18
 
   # File Operations
   file_selector: ^1.0.0
   path_provider: ^2.1.0
   share_plus: ^7.0.0
   mime: ^1.0.0
+  archive: ^3.4.10
 
   # Security & Encryption
   encrypt: 5.0.3
@@ -64,6 +66,7 @@ dependencies:
   freezed_annotation: ^2.4.0
   json_serializable: ^6.7.0
   shared_preferences: ^2.2.0
+  async: ^2.11.0
 
   # UI & UX
   flutter_svg: ^2.0.0
@@ -73,9 +76,28 @@ dependencies:
   google_fonts: ^6.1.0
   qr_flutter: ^4.1.0
   mobile_scanner: ^5.0.0
+  app_settings: ^5.1.1
 
   # Logging & Debugging
   logger: ^2.0.0
+
+  # File browsing & preview
+  image: ^4.0.0
+  video_player: ^2.7.0
+
+  # Security
+  flutter_secure_storage: ^9.0.0
+
+  # Performance
+  battery_plus: ^4.0.0
+  device_info_plus: ^9.0.0
+
+  # UI
+  cached_network_image: ^3.3.0
+
+  # Utilities
+  uuid: ^4.0.0
+  mutex: ^3.1.0
 
 dev_dependencies:
   flutter_test:

@@ -11,7 +11,7 @@ void main() {
       expect(state, isEmpty);
     });
 
-    test('addTransfer adds a transfer to the list', () async {
+    test('addTransfer adds a transfer to the map', () async {
       final container = ProviderContainer();
       final notifier = container.read(fileTransferProvider.notifier);
 
@@ -28,7 +28,7 @@ void main() {
 
       final state = await container.read(fileTransferProvider.future);
       expect(state, hasLength(1));
-      expect(state.first.fileId, 'test-1');
+      expect(state['test-1']?.fileId, 'test-1');
     });
 
     test('updateTransfer modifies an existing transfer', () async {
@@ -50,7 +50,7 @@ void main() {
       await notifier.updateTransfer('test-1', updated);
 
       final state = await container.read(fileTransferProvider.future);
-      expect(state.first.state, TransferState.inProgress);
+      expect(state['test-1']?.state, TransferState.inProgress);
     });
 
     test('pauseTransfer changes state to paused', () async {
@@ -70,7 +70,7 @@ void main() {
       await notifier.pauseTransfer('test-1');
 
       final state = await container.read(fileTransferProvider.future);
-      expect(state.first.state, TransferState.paused);
+      expect(state['test-1']?.state, TransferState.paused);
     });
 
     test('resumeTransfer changes state to inProgress', () async {
@@ -90,7 +90,7 @@ void main() {
       await notifier.resumeTransfer('test-1');
 
       final state = await container.read(fileTransferProvider.future);
-      expect(state.first.state, TransferState.inProgress);
+      expect(state['test-1']?.state, TransferState.inProgress);
     });
 
     test('cancelTransfer changes state to cancelled', () async {
@@ -110,7 +110,7 @@ void main() {
       await notifier.cancelTransfer('test-1');
 
       final state = await container.read(fileTransferProvider.future);
-      expect(state.first.state, TransferState.cancelled);
+      expect(state['test-1']?.state, TransferState.cancelled);
     });
 
     test('removeTransfer removes a transfer from the list', () async {
